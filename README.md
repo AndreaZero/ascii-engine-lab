@@ -1,10 +1,19 @@
 # ASCII Engine Lab
 
-An experimental ASCII rendering laboratory built with **Rust + wgpu**. It explores a reusable renderer in which light, materials, reflections and animation are expressed through dynamic characters.
+[![Rust](https://img.shields.io/badge/Rust-2021_edition-dea584?logo=rust&logoColor=white)](Cargo.toml)
+[![wgpu](https://img.shields.io/badge/wgpu-26.0.1-4a90d9)](Cargo.toml)
+[![Rendering](https://img.shields.io/badge/Rendering-Native_ASCII-638c73)](#rendering-approach)
+[![Status](https://img.shields.io/badge/Status-Experimental-d6a44c)](#limitations-and-next-steps)
+
+**Direct ASCII graphics with dynamic glyphs, lighting, reflections and procedural animation.**
+
+ASCII Engine Lab is an experimental rendering laboratory built with **Rust + wgpu**. It explores how expressive, animated worlds can be constructed directly from characters, with a reusable renderer that treats light, materials and motion as part of the character system.
 
 The current demo is a small environment with a moving light, water reflections and a procedural character with an animated cloak. First-person, third-person and overhead cameras observe the same world state.
 
 The project is under active development. Its APIs and visual language are experimental; it is not yet a production-ready game engine.
+
+[Quick start](#getting-started) · [How it renders](#rendering-approach) · [Captures and benchmarks](#captures-and-measurements) · [Contributing](#contributing) · [Report an issue](https://github.com/AndreaZero/ascii-engine-lab/issues)
 
 ## Rendering approach
 
@@ -160,7 +169,9 @@ Near-term work focuses on visual stability, separating authored content from the
 
 ## Contributing
 
-Bug reports, reproducible measurements, platform testing and focused pull requests are welcome. Describe the expected and observed behavior, relevant commands and environment. For visual changes, include captures or short sequences with comparable camera, lighting and simulation settings.
+Contributions are welcome, especially in **ASCII visual quality**, **animation and temporal stability**, **hardware compatibility** and **reproducible performance testing**.
+
+Use [issues](https://github.com/AndreaZero/ascii-engine-lab/issues) for bug reports and proposals, and [pull requests](https://github.com/AndreaZero/ascii-engine-lab/pulls) for focused changes. Describe the expected and observed behavior, relevant commands and environment. For visual changes, include captures or short sequences with comparable camera, lighting and simulation settings.
 
 Before submitting code, run the relevant checks:
 
