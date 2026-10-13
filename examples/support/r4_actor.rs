@@ -318,4 +318,3 @@ fn trace_cloth(ray: Ray, time: f32, active: bool) -> Option<Hit> {
     }
     None
 }
-

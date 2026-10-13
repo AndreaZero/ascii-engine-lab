@@ -127,6 +127,9 @@ impl Options {
     }
 }
 
+// One stack snapshot per frame, shared by all rays. Keep both variants free of
+// heap allocation so the comparison does not add allocation to just one path.
+#[allow(clippy::large_enum_variant)]
 enum StudyScene {
     Baseline(actor::ActorSnapshot),
     Current(current_actor::ActorSnapshot),

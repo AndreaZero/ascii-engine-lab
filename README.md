@@ -1,118 +1,187 @@
-# ASCII Engine Lab — prima prova Rust + wgpu
+# ASCII Engine Lab
 
-Laboratorio autonomo per un motore di rappresentazione ASCII riutilizzabile. BLACKWATER è il primo utilizzatore previsto; gameplay sospeso. Il progetto Godot nella cartella sorella resta riferimento storico e non viene caricato da questo programma.
+An experimental ASCII rendering laboratory built with **Rust + wgpu**. It explores a reusable renderer in which light, materials, reflections and animation are expressed through dynamic characters.
 
-Questa è una prova tecnica progressiva, non la grafica finale e non un motore già validato rispetto a Godot. Rust + wgpu è la base richiesta dall'utente; non c'è un benchmark equivalente che ne dimostri superiorità.
+The current demo is a small environment with a moving light, water reflections and a procedural character with an animated cloak. First-person, third-person and overhead cameras observe the same world state.
 
-## Avvio
+The project is under active development. Its APIs and visual language are experimental; it is not yet a production-ready game engine.
 
-Su questa macchina: aprire `Avvia-laboratorio.cmd`, che esegue la build release presente oppure la compila se manca. Per ricompilare dopo modifiche usare Cargo (il launcher non ricompila automaticamente una build già presente):
+## Rendering approach
 
-```powershell
-cd C:\Users\andre\Documents\cursor-projects\ascii-game\ascii-engine-lab
+The image is built directly from semantic character cells:
+
+```text
+Immutable world snapshot
+        |
+Analytic visibility, lighting and reflection queries
+        |
+Material-driven ASCII glyphs and colors
+        |
+wgpu glyph atlas -> window or PNG capture
+```
+
+CPU queries return surface position, depth, normal, material and persistent identity. These determine the character and its color. wgpu draws the resulting glyph cells using an embedded font atlas.
+
+There is no mesh-rendered world image or RGB-to-ASCII post-processing pass. Spatial data supports perspective and occlusion; the fullscreen display triangle is only a way to draw the characters.
+
+Current capabilities include:
+
+- Three camera projections over a shared scene and simulation time.
+- Moving point lighting, analytic shadows and a dark ambient lighting model.
+- Planar water with animated normals and single-bounce reflections.
+- An analytic character, procedural idle motion and a deforming cloak.
+- Material-specific glyph patterns and conservative temporal stabilization.
+- Configurable output resolution, character density and CPU worker budgets.
+- Windowed rendering, GPU PNG capture and reproducible measurements.
+
+## Getting started
+
+Requirements:
+
+- A Rust toolchain with Cargo.
+- A native linker/build toolchain for the target platform. Windows MSVC builds require the Visual Studio C++ Build Tools.
+- Graphics drivers and an adapter compatible with a supported wgpu backend.
+- Access to crates.io for the first dependency download.
+
+```sh
+git clone https://github.com/AndreaZero/ascii-engine-lab.git
+cd ascii-engine-lab
 cargo run --locked --release
 ```
 
-Toolchain verificata: Rust 1.97.1 x86_64-pc-windows-msvc. Dipendenze bloccate in Cargo.lock; wgpu 26.0.1, winit 0.30.12. La compilazione iniziale richiede accesso a crates.io e linker MSVC. Non sono necessarie installazioni Godot, font di sistema o asset esterni.
+The font is embedded. The demo does not require external assets or another game engine.
 
-| Controllo | Azione |
+On Windows, `Avvia-laboratorio.cmd` runs an existing release build or builds one if it is missing. After changing source code, rebuild with Cargo: the launcher does not check whether an existing executable is stale.
+
+### Controls
+
+| Key | Action |
 | --- | --- |
-| 1 / 2 / 3 | Osservatore in prima persona / terza / dall'alto |
-| F1 / F2 / F3 / F4 | Core / luce mobile / acqua / tessuto animato |
-| Q / E | Rotazione della visuale (yaw in prima, orbita nelle viste esterne) |
-| WASD, Z / X | Sposta l'osservatore; Z/X abbassa/alza |
-| Spazio | Pausa il tempo di simulazione |
-| H | Mostra/nasconde riga diagnostica |
-| P | Cattura PNG della stessa pipeline GPU in evidence/ |
-| R / Esc | Ripristina vista e tempo / esci |
+| 1 / 2 / 3 | First-person / third-person / overhead camera |
+| F1 / F2 / F3 / F4 | Core / lighting / water / animated cloth stage |
+| Q / E | Rotate the view |
+| W / A / S / D | Move the observer |
+| Z / X | Lower / raise the observer |
+| Space | Pause simulation time |
+| H | Toggle the diagnostic overlay |
+| P | Capture a PNG in `evidence/` |
+| R | Reset the current view and simulation time |
+| Esc | Exit |
 
-Sono camere di laboratorio: non c'è ancora un controller giocabile con collisioni, mani in prima persona o inseguimento di un player controllato. Il cambio vista non resetta tempo, luce o posa. Lo spostamento osservatore può attraversare oggetti: limite esplicito della prova.
+These are laboratory observer cameras. Gameplay movement, camera collision, player tracking and first-person hands are not implemented.
 
-## Cosa produce l'immagine
+## Quality and execution budgets
 
-`Scene::trace` interroga forme analitiche e restituisce posizione, profondità, ID, materiale e normale. Il compositore sceglie carattere ASCII e colore dal materiale e dalla luce. wgpu riceve solo le celle e disegna i glifi dell'atlas font8x8. Nessuna mesh di mondo, immagine RGB del mondo, texture Godot o filtro ASCII alimenta la scelta dei caratteri. Il triangolo fullscreen è solo il supporto con cui il fragment shader deposita l'inchiostro dei caratteri.
-
-La copertura opaca viene risolta prima dell'inchiostro: gli spazi in una lettera non mostrano l'oggetto dietro. Il nero è sfondo, non un riempimento solido colorato. Font 8×8 incorporato, ASCII stampabile 32–126. Shader di uscita senza antialiasing temporale.
-
-| File | Responsabilità |
-| --- | --- |
-| src/core.rs | Ray/Hit/GlyphCell, contratto Scene e intersezioni numeriche |
-| src/budget.rs | Profili espliciti e risoluzione del budget CPU |
-| src/camera.rs | Prospettiva e vista ortografica dall'alto |
-| src/frame.rs | Visibilità/luce/riflesso → glifi; memoria conservativa e diagnostica |
-| src/gpu.rs, src/glyph.wgsl | Presentazione e catture wgpu, senza conoscenza del contenuto |
-| src/world.rs, src/actor.rs | Fixture sostituibile: cortile, luce, acqua, figura e mantello |
-| src/main.rs | Finestra, input, CLI e protocollo misure |
-
-Un altro utilizzatore può implementare `Scene` e alimentare lo stesso compositore; un produttore alternativo può produrre `GlyphCell` direttamente. Non sono ancora un SDK stabile o un formato universale di scene.
-
-Il compositore richiede `Scene + Sync` e query deterministiche di uno stato immutabile. L'app prepara `LabScene::snapshot(time, stage)` una volta per composizione, riutilizzando posa e luce per i raggi primari, le ombre e i riflessi. Un altro client può fornire il proprio snapshot tramite `Scene`.
-
-Il pool CPU è persistente. Il budget automatico usa la stima di parallelismo disponibile e il tetto del profilo; quando possibile lascia un'unità fuori dal pool. Non è una riserva di core fisici né un'affinità imposta al sistema operativo. `--workers 1` usa il percorso seriale; un numero esplicito può superare il tetto del profilo, entro la capacità stimata e il limite applicativo di 64. Il numero ottimale dipende dalla macchina e dal contenuto.
-
-## Budget e compatibilità
-
-| Profilo | Output | Griglia caratteri | Tetto worker automatici |
+| Profile | Output pixels | Character grid | Automatic worker cap |
 | --- | --- | --- | --- |
-| economy | 960×544 | 120×68 | 2 |
-| balanced (default) | 1280×720 | 160×90 | 8 |
-| detail | 1920×1080 | 240×135 | 16 |
+| `economy` | 960 x 544 | 120 x 68 | 2 |
+| `balanced` (default) | 1280 x 720 | 160 x 90 | 8 |
+| `detail` | 1920 x 1080 | 240 x 135 | 16 |
 
-`--profile economy`, `balanced` o `detail` sceglie un punto di partenza esplicito: non è una calibrazione automatica e non promette un frame rate. La densità non cambia durante il movimento. `--width`, `--height`, `--cols`, `--rows` e `--workers` possono essere sovrascritti indipendentemente dall'ordine degli argomenti. Sul PC con capacità stimata 16, i budget automatici sono 2/8/15.
-
-`--backend auto|vulkan|dx12|metal|gl` seleziona il percorso grafico; un backend esplicito non viene sostituito silenziosamente. Auto rispetta anche `WGPU_BACKEND`. `--adapter-power auto|low|high` esprime una preferenza per la scheda, senza garantirne la disponibilità. `--fallback-adapter` richiede esplicitamente un adapter di fallback per diagnosi. I limiti/formati necessari vengono controllati prima della creazione delle risorse.
-
-`--diagnostics --output evidence/my-machine` salva capacità effettive e configurazione in `runtime.json` dopo l'inizializzazione GPU. Un errore di compatibilità precedente viene stampato in console; non produce quel JSON. La diagnosi headless non verifica la superficie della finestra. Dettagli, risultati e piattaforme ancora da provare in [PORTABILITY.md](PORTABILITY.md).
-
-## Prove riproducibili
-
-```powershell
-cargo test --locked
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo build --locked --release
-cargo run --locked --release --example cloth_study
-.\target\release\ascii-engine-lab.exe --benchmark --frames 120 --output evidence\720p
-.\target\release\ascii-engine-lab.exe --benchmark --frames 120 --width 1920 --height 1080 --cols 240 --rows 135 --output evidence\1080p
-.\target\release\ascii-engine-lab.exe --headless --camera third --stage cloth --output evidence\capture
-.\target\release\ascii-engine-lab.exe --sequence 90 --camera third --stage cloth --output evidence\sequence-third
-.\target\release\ascii-engine-lab.exe --sequence 90 --camera third --orbit 2.4 --stage cloth --output evidence\sequence-cloth-back
-.\target\release\ascii-engine-lab.exe --seconds 3
-.\target\release\ascii-engine-lab.exe --workers 4
-.\target\release\ascii-engine-lab.exe --profile economy --workers auto
-.\target\release\ascii-engine-lab.exe --profile detail --backend dx12
-.\target\release\ascii-engine-lab.exe --diagnostics --output evidence\my-machine
-.\target\release\ascii-engine-lab.exe --benchmark-case --profile balanced --workers 2 --frames 120 --output evidence\my-machine-case
-cargo run --locked --release --example snapshot_bench -- --paired
+```sh
+cargo run --locked --release -- --profile economy
+cargo run --locked --release -- --profile detail --workers auto
+cargo run --locked --release -- --workers 1
+cargo run --locked --release -- --help
 ```
 
-`--benchmark` visita quattro stage e tre camere; `--benchmark-case` visita soltanto camera/stage selezionati. Entrambi usano 12 frame di warm-up per caso, CSV di ogni frame misurato e JSON aggregato. Le PNG vengono dalla GPU reale anche in modalità senza finestra. `--sequence` salva fotogrammi a passo simulato di 1/30 s e piccola rotazione camera; non misura un frame rate di riproduzione. `--seconds` esegue uno smoke test a finestra con chiusura automatica. Per esportare un pacchetto confrontabile da un altro PC, conservare insieme runtime.json, benchmark.json e CSV, indicando anche modello CPU, sistema e condizioni di carico.
+Automatic worker selection uses the runtime's available-parallelism estimate and the profile cap, leaving one execution slot outside the pool when possible. This is a capacity estimate, not a CPU-speed measurement or a reservation of physical cores. Explicit worker counts must fit the detected capacity and the application limit of 64.
 
-Output e griglia sono variabili diverse: 720p a 160×90 celle e 1080p a 240×135 mantengono 8×8 pixel per glifo, ma il secondo caso aumenta sia pixel sia query. Per isolare il costo GPU ripetere 1080p con `--cols 160 --rows 90`.
+Output pixels and character density can be changed independently with `--width`, `--height`, `--cols` and `--rows`. Profiles remain fixed during a run; they do not guarantee a frame rate or silently reduce detail.
 
-Tempi `submit_and_wait` includono driver, upload, lavoro GPU e sincronizzazione: **non sono timestamp GPU**. Frame offscreen sincronizzato non equivale a FPS/present della finestra. Il test statico controlla sia due composizioni da zero sia composizioni consecutive con storia. La metrica in movimento corrisponde soltanto a celle con identico ID nella stessa posizione schermo; riportare anche quante celle vengono abbinate. Non è una misura completa di sfarfallio né una riproiezione dei campioni.
+Backend selection accepts `--backend auto|vulkan|dx12|metal|gl`. An explicit backend fails if unavailable rather than silently switching. Automatic selection also respects `WGPU_BACKEND`. Adapter options include `--adapter-power auto|low|high` and `--fallback-adapter`.
 
-## Approssimazioni e lavoro mancante
+Runtime execution has been checked on **Windows x64 with Vulkan and DirectX 12**. Other hardware and operating systems still need validation. Backend selection alone is not proof that a platform has been tested. See [PORTABILITY.md](PORTABILITY.md) for the existing evidence and limitations.
 
-- Una query centrale per cella può perdere bordi, fili e dettagli piccoli. La quantizzazione dei glifi può produrre popping durante pan e zoom.
-- Luce puntuale, ombre nette analitiche e termine ambientale artistico; niente illuminazione globale. Non tutti i materiali hanno già risposta speculare distinta.
-- Acqua piana con normale perturbata e un solo rimbalzo; riflesso interrogato direttamente nello stesso mondo/tick, senza rifrazione, onde geometriche o simulazione fluidi.
-- Figura da ellissoidi e tessuto analitico. Abito con onde locali e ancoraggi, non fisica del tessuto; tangenze e auto-intersezioni sono casi da migliorare.
-- Grammatica visiva, densità e silhouette sono essenziali: non hanno ancora la qualità delle reference. Niente editor, gameplay, asset pipeline, networking o demo MMO.
-- Il costo delle query del mondo è CPU; wgpu compone i caratteri. Trasferire query a compute richiede prima una misura che ne motivi il lavoro.
+## Captures and measurements
 
-Il provino `cloth_study` usa una seconda implementazione di `Scene`: figura isolata, camera/luce ferme, output in `evidence/cloth-isolated/`. Serve a distinguere deformazione da movimento camera/luce; non cambia i benchmark del cortile.
+Create a GPU capture, record a sequence or collect a selected benchmark case:
 
-Risultati e priorità successive in [REPORT.md](REPORT.md). Regia e prompt sono in `../ascii-game/docs/COORDINATION.md` e `CHAT_STARTERS.md`. Non creare altre chat senza richiesta umana; i subagenti ricevono file disgiunti dalla regia.
+```sh
+cargo run --locked --release -- --headless --camera third --stage cloth --output evidence/capture
+cargo run --locked --release -- --sequence 90 --camera overhead --stage cloth --output evidence/sequence
+cargo run --locked --release -- --benchmark-case --camera third --stage cloth --frames 120 --output evidence/benchmark
+cargo run --locked --release -- --diagnostics --output evidence/diagnostics
+```
 
-R1 in REPORT.md resta il riferimento storico. La prova CPU multicore, il significato delle misure e i prossimi passi sono in [PERFORMANCE.md](PERFORMANCE.md); i dati aggregati R2 sono in [summary.md](evidence/r2/scaling/summary.md). I test `r1_parity` compilano una copia immutabile dei sorgenti R1 in evidence/r2/baseline/src, esclusa dall'applicazione; conservarla insieme ai test.
+`--benchmark` visits all four stages and all three cameras. `--benchmark-case` measures the selected camera/stage. Both use 12 warm-up frames and produce per-frame CSV data and aggregate JSON. `--diagnostics` records the runtime configuration and actual adapter capabilities.
 
-R3 è descritta in [PORTABILITY.md](PORTABILITY.md). I test `snapshot_parity` e l'esempio `snapshot_bench` usano le copie R2 in `evidence/r3/baseline/src`. Conservare anche queste. Gli script `measure-scaling.ps1` e `summarize-scaling.py` documentano R2: non rieseguirli sul loro output storico con la build corrente; per un nuovo confronto usare una destinazione nuova e identificare la nuova revisione.
+Sequences use a simulation step of 1/30 second and a small camera rotation. Captured playback rate is independent of rendering throughput.
 
-La build corrente R4 aggiunge `Scene::occluded` con default compatibile, specializzazione delle ombre del cortile e profiler per categorie di raggi. Risultati e comandi in [QUERY_PERFORMANCE.md](QUERY_PERFORMANCE.md). I test `query_parity` importano camera/compositore/mondo R3 da `evidence/r4/baseline/src`, da conservare immutabili. Non attribuire grandi accelerazioni a questa modifica: il beneficio misurato è modesto e variabile.
+The controlled character study uses the same renderer with an isolated figure, fixed lighting and three views:
 
-Per capire cosa manca al motore, come un gioco lo utilizzerà e come nasceranno gli strumenti, leggere [ENGINE_MILESTONES.md](../ascii-game/docs/ENGINE_MILESTONES.md). La prossima priorità è un provino visivo mirato; gameplay ed editor completo restano fuori dalla tranche.
+```sh
+cargo run --locked --release --example character_study -- --camera all --variant current --frames 180 --out evidence/character-study
+cargo run --locked --release --example character_study -- --camera all --variant baseline --frames 180 --out evidence/character-baseline
+cargo run --locked --release --example character_study -- --benchmark --camera all --frames 120 --out evidence/character-cpu
+```
 
-## Fonti di API e dipendenze
+The baseline contains the previous character and materials. This comparison evaluates intentional visual changes, not an optimization at identical quality. The study's `--benchmark` mode skips GPU initialization and captures.
 
-[wgpu 26.0.1](https://docs.rs/wgpu/26.0.1/wgpu/), [winit 0.30.12](https://docs.rs/winit/0.30.12/winit/), [font8x8](https://docs.rs/font8x8/0.3.1/font8x8/). Le fonti documentano le API, non attestano qualità o prestazioni del laboratorio.
+CPU composition time, submission/wait time and synchronized offscreen frame time are separate measurements. **Submission/wait is not a GPU timestamp**, and offscreen timings are not window presentation FPS. Stability metrics cover matching surface IDs in the same screen cell; they are not a complete perceptual flicker measure.
+
+When reporting results, include the revision, operating system, CPU, GPU/backend/driver, profile or explicit dimensions, worker count, camera, stage, frame count and workload conditions.
+
+Generated captures, videos, binaries and raw recordings are excluded from Git. Historical source fixtures needed by tests and compact report summaries are versioned. Some historical scripts expect local recordings that are not included in a clone; use the current CLI and fresh output directories for new measurements.
+
+## Project structure and reuse
+
+| Path | Responsibility |
+| --- | --- |
+| `src/core.rs` | Rays, hits, glyph cells, scene contract and intersections |
+| `src/budget.rs` | Quality profiles and CPU worker budgets |
+| `src/camera.rs` | Perspective and overhead projections |
+| `src/frame.rs` | Visibility, lighting, reflection and glyph history |
+| `src/gpu.rs`, `src/glyph.wgsl` | GPU presentation and capture |
+| `src/world.rs`, `src/actor.rs` | Replaceable environment and character fixtures |
+| `src/main.rs` | Window, input, CLI and measurements |
+| `examples/` | Controlled studies and benchmark programs |
+| `tests/` | Regression and traversal comparisons |
+| `scripts/` | Measurement and verification utilities |
+| `evidence/r*/baseline/` | Frozen sources used by regression tests |
+
+Applications can implement `Scene` and feed the existing `Composer`. Query implementations must be `Sync` and deterministic for one immutable simulation snapshot. Update the simulation before composition and share its state across primary, shadow and reflection queries.
+
+The demo prepares `LabScene::snapshot(time, stage)` once per composition. `Scene::glyph_history_key` lets materials identify structural changes, such as a moving fold or seam, so temporal stabilization can preserve lighting continuity while allowing those characters to change.
+
+These contracts are still evolving. A stable SDK, portable content format and independent application integration remain development goals.
+
+## Limitations and next steps
+
+- One visibility sample per character cell can miss thin features and cause popping during camera movement.
+- Lighting uses an artistic ambient term and one point light. General multi-light rendering and global illumination are not implemented.
+- Water uses a planar surface and one reflection bounce; refraction and fluid simulation are not implemented.
+- Cloth motion is procedural, with anchored regions and local deformation. It is not a physical cloth solver, and grazing intersections need further work.
+- Fire, general vegetation animation and destructible environments are future capabilities.
+- The project does not yet provide gameplay systems, an editor, asset authoring tools or networking.
+- Rendering queries currently run on the CPU. Further acceleration requires profiling and quality comparisons.
+
+Near-term work focuses on visual stability, separating authored content from the demo fixture, exercising the renderer from an independent client and expanding hardware validation.
+
+## Contributing
+
+Bug reports, reproducible measurements, platform testing and focused pull requests are welcome. Describe the expected and observed behavior, relevant commands and environment. For visual changes, include captures or short sequences with comparable camera, lighting and simulation settings.
+
+Before submitting code, run the relevant checks:
+
+```sh
+cargo fmt --check
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+cargo build --locked --release
+```
+
+Keep changes scoped to a clear problem. Preserve direct character generation, deterministic snapshot queries and the source fixtures used by regression tests. Avoid committing generated media, build output, credentials or machine-specific configuration. Preserve `Cargo.lock` for reproducible dependencies.
+
+Visual or GPU changes also need a real rendering check; CPU tests alone cannot establish appearance or backend compatibility.
+
+## Development reports
+
+- [REPORT.md](REPORT.md) — initial laboratory and rendering limitations.
+- [PERFORMANCE.md](PERFORMANCE.md) — CPU parallelism experiments.
+- [PORTABILITY.md](PORTABILITY.md) — execution budgets, snapshots and compatibility checks.
+- [QUERY_PERFORMANCE.md](QUERY_PERFORMANCE.md) — shadow-query profiling and comparisons.
+
+These reports describe specific historical revisions and measurement sessions. Their results are not universal performance guarantees.
+
+Core dependency documentation: [wgpu 26.0.1](https://docs.rs/wgpu/26.0.1/wgpu/), [winit 0.30.12](https://docs.rs/winit/0.30.12/winit/), [font8x8](https://docs.rs/font8x8/0.3.1/font8x8/).

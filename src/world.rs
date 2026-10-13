@@ -479,7 +479,8 @@ fn cape_glyph(local: Vec3, normal: Vec3, illumination: f32) -> u8 {
     if (local.x - 0.5).abs() < 0.025 && local.y > 0.45 {
         return b'|';
     }
-    if local.y > 0.90 && (0.25..0.75).contains(&local.x) {
+    // A single narrow yoke seam, rather than a solid ladder of underscores.
+    if (0.94..0.955).contains(&local.y) && (0.25..0.75).contains(&local.x) {
         return b'_';
     }
     // The sheet normal may be flipped toward the observer. Its component
