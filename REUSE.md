@@ -1,5 +1,7 @@
 # R6 — renderer separato e secondo utilizzatore
 
+Nota successiva: R7 aggiunge un percorso materiale locale opzionale, documentato in [STONE_STUDY.md](STONE_STUDY.md). Questo report conserva risultati e limiti della consegna R6; il JSON di Material Room non espone ancora i nuovi parametri.
+
 Consegna verificata il 13 ottobre 2026. Il motore ora è un crate distinto, `crates/ascii-render`. Il laboratorio del cortile e la nuova applicazione `clients/material-room` lo usano da due host diversi. Il secondo client non dipende da `ascii-engine-lab`, non importa il personaggio o gli oggetti BLACKWATER e carica una propria scena JSON. È la prima prova concreta di riuso; non è una versione 1 del motore o una dimostrazione della qualità artistica finale.
 
 ## Cosa cambia

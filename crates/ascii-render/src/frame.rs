@@ -92,10 +92,16 @@ impl Composer {
         aspect: f32,
     ) -> (Vec<GlyphCell>, FrameStats) {
         let count = (cols * rows) as usize;
+        let local_materials = scene.local_materials();
         let prepared = PreparedFrame {
             scene,
             camera: camera.prepare(cols, rows, aspect),
             lighting: PreparedLighting {
+                color: if local_materials {
+                    scene.light_color()
+                } else {
+                    Vec3::new(1., 0.58, 0.23)
+                },
                 moon: Vec3::new(-0.5, 0.85, 0.3).normalize(),
                 light: if stage == Stage::Core {
                     Vec3::ZERO
@@ -106,6 +112,7 @@ impl Composer {
             time,
             stage,
             cols,
+            local_materials,
         };
         self.scratch.resize(count, CellResult::default());
         let previous = &self.previous_cells;
@@ -156,6 +163,7 @@ impl Composer {
 }
 
 struct PreparedLighting {
+    color: Vec3,
     moon: Vec3,
     light: Vec3,
 }
@@ -167,6 +175,7 @@ struct PreparedFrame<'a, S: Scene + Sync> {
     time: f32,
     stage: Stage,
     cols: u32,
+    local_materials: bool,
 }
 
 impl<S: Scene + Sync> PreparedFrame<'_, S> {
@@ -179,7 +188,11 @@ impl<S: Scene + Sync> PreparedFrame<'_, S> {
         };
         let mut result = CellResult::default();
         let mut id = surface_id(hit);
-        let mut color = shade(self.scene, hit, self.time, self.stage, &self.lighting);
+        let adjacent = self
+            .local_materials
+            .then(|| [self.camera.ray(x + 1, y), self.camera.ray(x, y + 1)]);
+        let mut footprint = adjacent.map_or(0., |rays| surface_footprint(ray, rays, hit));
+        let mut color = self.shade_hit(hit, -ray.dir, footprint);
         let mut source = hit;
         if hit.material == WATER {
             let nx = (hit.position.x * 3.2 + self.time * 1.4).cos() * 0.055;
@@ -191,7 +204,12 @@ impl<S: Scene + Sync> PreparedFrame<'_, S> {
             };
             if let Some(r) = self.scene.trace(reflected, self.time, self.stage, false) {
                 let fresnel = 0.28 + 0.52 * (1. - (-ray.dir.dot(n)).clamp(0., 1.)).powi(3);
-                color = shade(self.scene, r, self.time, self.stage, &self.lighting)
+                // Approximate reflected footprint by the camera cone at total
+                // path length. It ignores curvature/focusing of the water.
+                footprint = adjacent.map_or(0., |rays| {
+                    cone_footprint(ray, rays, hit.distance + r.distance)
+                });
+                color = self.shade_hit(r, -reflected.dir, footprint)
                     * Vec3::new(0.58, 0.76, 0.85)
                     * fresnel
                     + color * 0.15;
@@ -203,18 +221,23 @@ impl<S: Scene + Sync> PreparedFrame<'_, S> {
             }
         }
         let illumination = color.max_element();
-        let mut glyph = self
-            .scene
-            .glyph(source.material, source.local, source.normal, illumination)
-            as u32;
+        let mut glyph = if self.local_materials {
+            self.scene.glyph_sample(source, illumination, footprint)
+        } else {
+            self.scene
+                .glyph(source.material, source.local, source.normal, illumination)
+        } as u32;
         if illumination < 0.012 {
             glyph = 32;
         }
         let fog = (-hit.distance * 0.026).exp();
         color = (color * fog).min(Vec3::ONE);
-        let history_key =
+        let history_key = if self.local_materials {
+            self.scene.glyph_sample_key(source, footprint)
+        } else {
             self.scene
-                .glyph_history_key(source.material, source.local, source.normal);
+                .glyph_history_key(source.material, source.local, source.normal)
+        };
         // Lighting hysteresis must not hide authored region/material changes.
         // Matching statistics remain ID-only for compatibility with prior runs.
         let mut anchor = illumination;
@@ -247,6 +270,140 @@ impl<S: Scene + Sync> PreparedFrame<'_, S> {
         result.history = (id, glyph, anchor, color, source.material, history_key);
         result
     }
+
+    fn shade_hit(&self, hit: Hit, view: Vec3, footprint: f32) -> Vec3 {
+        if self.local_materials && hit.material != EMISSIVE {
+            if let Some(sample) = self.scene.material_sample(hit, footprint) {
+                return shade_material(
+                    self.scene,
+                    hit,
+                    sample,
+                    view,
+                    footprint,
+                    self.time,
+                    self.stage,
+                    &self.lighting,
+                );
+            }
+        }
+        shade(self.scene, hit, self.time, self.stage, &self.lighting)
+    }
+}
+
+fn cone_footprint(ray: Ray, adjacent: [Ray; 2], distance: f32) -> f32 {
+    let center = ray.origin + ray.dir * distance;
+    adjacent
+        .into_iter()
+        .map(|r| (r.origin + r.dir * distance - center).length())
+        .fold(0.0001_f32, f32::max)
+}
+
+fn surface_footprint(ray: Ray, adjacent: [Ray; 2], hit: Hit) -> f32 {
+    let mut width = cone_footprint(ray, adjacent, hit.distance);
+    for r in adjacent {
+        let denominator = r.dir.dot(hit.normal);
+        if denominator.abs() > 1e-5 {
+            let t = (hit.position - r.origin).dot(hit.normal) / denominator;
+            if t > 0. && t.is_finite() {
+                let size = (r.origin + r.dir * t - hit.position).length();
+                if size.is_finite() {
+                    width = width.max(size);
+                }
+            }
+        }
+    }
+    width
+}
+
+fn unit_value(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0., 1.)
+    } else {
+        fallback
+    }
+}
+
+// GGX + Smith height-correlated visibility + Schlick + Lambert, following the
+// primary Filament equations: https://google.github.io/filament/main/filament.html
+// (Standard model summary). Scalar F0, authored cavity, legacy artistic light
+// attenuation and a world-unit footprint roughness floor are simplifications;
+// this is neither calibrated physical transport nor a full specular-AA filter.
+#[allow(clippy::too_many_arguments)]
+fn shade_material(
+    scene: &impl Scene,
+    hit: Hit,
+    sample: MaterialSample,
+    view: Vec3,
+    footprint: f32,
+    time: f32,
+    stage: Stage,
+    lighting: &PreparedLighting,
+) -> Vec3 {
+    let albedo = Vec3::from_array(sample.albedo.to_array().map(|v| unit_value(v, 0.)));
+    let occlusion = unit_value(sample.occlusion, 1.);
+    let mut n = sample.normal.normalize_or_zero();
+    if !n.is_finite() || n.length_squared() < 0.5 {
+        n = hit.normal;
+    }
+    if n.dot(hit.normal) < 0. {
+        n = -n;
+    }
+    let ambient = albedo * (0.07 + 0.10 * n.dot(lighting.moon).max(0.)) * occlusion;
+    if stage == Stage::Core {
+        return ambient;
+    }
+    let to = lighting.light - hit.position;
+    let distance = to.length();
+    if !distance.is_finite() || distance < 0.0001 {
+        return ambient;
+    }
+    let l = to / distance;
+    let v = view.normalize_or_zero();
+    let no_l = n.dot(l).max(0.);
+    let no_v = n.dot(v).max(0.);
+    // Decorative normals cannot illuminate the geometric back face or move a
+    // shadow origin into the surface. Occlusion uses the original hit normal.
+    if hit.normal.dot(l) <= 0. || no_l <= 0. || no_v <= 0. {
+        return ambient;
+    }
+    if scene.occluded(
+        Ray {
+            origin: hit.position + hit.normal * 0.012,
+            dir: l,
+        },
+        time,
+        stage,
+        distance - 0.09,
+    ) {
+        return ambient;
+    }
+    let h = (v + l).normalize_or_zero();
+    let no_h = n.dot(h).clamp(0., 1.);
+    let vo_h = v.dot(h).clamp(0., 1.);
+    // Conservative heuristic at the laboratory's world scale, not normal
+    // variance integration. Producers should also band-limit their relief.
+    let floor = (0.16 + footprint.max(0.) * 2.).clamp(0.16, 0.65);
+    let roughness = unit_value(sample.roughness, 1.).max(floor);
+    let alpha = roughness * roughness;
+    let a2 = alpha * alpha;
+    let d_den = no_h * no_h * (a2 - 1.) + 1.;
+    let distribution = a2 / (std::f32::consts::PI * d_den * d_den).max(1e-8);
+    let visibility_den =
+        no_l * (no_v * no_v * (1. - a2) + a2).sqrt() + no_v * (no_l * no_l * (1. - a2) + a2).sqrt();
+    let visibility = 0.5 / visibility_den.max(1e-5);
+    let f0 = unit_value(sample.f0, 0.04);
+    let fresnel = f0 + (1. - f0) * (1. - vo_h).powi(5);
+    let specular = (distribution * visibility * fresnel).min(64.);
+    let diffuse = albedo * ((1. - fresnel) / std::f32::consts::PI);
+    let light = Vec3::from_array(lighting.color.to_array().map(|v| {
+        if v.is_finite() {
+            v.clamp(0., 16.)
+        } else {
+            0.
+        }
+    }));
+    let attenuation = 4.5 / (1. + distance * distance * 0.45);
+    ambient + (diffuse + Vec3::splat(specular)) * light * (no_l * attenuation * occlusion)
 }
 
 fn shade(
@@ -316,6 +473,304 @@ pub fn overlay(cells: &mut [GlyphCell], cols: u32, rows: u32, text: &str) {
 mod tests {
     use super::*;
     use crate::camera::Mode;
+
+    struct LocalProbe {
+        enabled: bool,
+        sample: Option<MaterialSample>,
+        blocked: bool,
+    }
+    impl Scene for LocalProbe {
+        fn trace(&self, _: Ray, _: f32, _: Stage, _: bool) -> Option<Hit> {
+            Some(local_hit())
+        }
+        fn occluded(&self, ray: Ray, _: f32, _: Stage, max: f32) -> bool {
+            assert_eq!(
+                ray.origin,
+                Vec3::Z * 0.012,
+                "shadow offset must use geometric normal"
+            );
+            assert!((max - 1.91).abs() < 1e-6);
+            self.blocked
+        }
+        fn light_position(&self, _: f32) -> Vec3 {
+            Vec3::Z * 2.
+        }
+        fn pigment(&self, _: u32) -> Vec3 {
+            Vec3::splat(0.3)
+        }
+        fn glyph(&self, _: u32, _: Vec3, _: Vec3, _: f32) -> u8 {
+            b'#'
+        }
+        fn local_materials(&self) -> bool {
+            self.enabled
+        }
+        fn material_sample(&self, _: Hit, footprint: f32) -> Option<MaterialSample> {
+            assert!(self.enabled, "legacy must not sample materials");
+            assert!(footprint.is_finite() && footprint > 0.);
+            self.sample
+        }
+        fn light_color(&self) -> Vec3 {
+            assert!(self.enabled, "legacy must not query local light color");
+            Vec3::ONE
+        }
+    }
+    fn local_hit() -> Hit {
+        Hit {
+            distance: 1.,
+            position: Vec3::ZERO,
+            normal: Vec3::Z,
+            material: 77,
+            object_id: 91,
+            local: Vec3::new(0.1, 0.2, 0.),
+        }
+    }
+    fn local_sample() -> MaterialSample {
+        MaterialSample {
+            albedo: Vec3::splat(0.3),
+            normal: Vec3::Z,
+            roughness: 0.25,
+            f0: 0.04,
+            occlusion: 1.,
+        }
+    }
+    fn local_lighting() -> PreparedLighting {
+        PreparedLighting {
+            moon: Vec3::Y,
+            light: Vec3::Z * 2.,
+            color: Vec3::ONE,
+        }
+    }
+    fn sample_color(
+        scene: &LocalProbe,
+        sample: MaterialSample,
+        view: Vec3,
+        footprint: f32,
+        stage: Stage,
+    ) -> Vec3 {
+        shade_material(
+            scene,
+            local_hit(),
+            sample,
+            view,
+            footprint,
+            0.,
+            stage,
+            &local_lighting(),
+        )
+    }
+
+    #[test]
+    fn local_brdf_responds_to_view_roughness_footprint_shadow_and_cavity() {
+        let scene = LocalProbe {
+            enabled: true,
+            sample: Some(local_sample()),
+            blocked: false,
+        };
+        let sample = local_sample();
+        let peak = sample_color(&scene, sample, Vec3::Z, 0.001, Stage::Light);
+        let off_axis = sample_color(&scene, sample, Vec3::new(0.6, 0., 0.8), 0.001, Stage::Light);
+        let rough = sample_color(
+            &scene,
+            MaterialSample {
+                roughness: 0.8,
+                ..sample
+            },
+            Vec3::Z,
+            0.001,
+            Stage::Light,
+        );
+        let filtered = sample_color(&scene, sample, Vec3::Z, 0.5, Stage::Light);
+        assert!(peak.x > off_axis.x && peak.x > rough.x && peak.x > filtered.x);
+        let ambient = sample_color(&scene, sample, Vec3::Z, 0.001, Stage::Core);
+        let blocked = LocalProbe {
+            blocked: true,
+            ..scene
+        };
+        assert_eq!(
+            sample_color(&blocked, sample, Vec3::Z, 0.001, Stage::Light),
+            ambient
+        );
+        assert_eq!(
+            sample_color(&blocked, sample, Vec3::X, 0.5, Stage::Core),
+            ambient
+        );
+        let tilted = MaterialSample {
+            normal: Vec3::new(0.4, 0., 1.).normalize(),
+            ..sample
+        };
+        assert!(sample_color(&blocked, tilted, Vec3::Z, 0.001, Stage::Light).is_finite());
+        let open = LocalProbe {
+            blocked: false,
+            ..blocked
+        };
+        assert_eq!(
+            sample_color(
+                &open,
+                MaterialSample {
+                    occlusion: 0.,
+                    ..sample
+                },
+                Vec3::Z,
+                0.001,
+                Stage::Light
+            ),
+            Vec3::ZERO
+        );
+        let bright = sample_color(
+            &open,
+            MaterialSample {
+                albedo: Vec3::splat(0.8),
+                ..sample
+            },
+            Vec3::Z,
+            0.001,
+            Stage::Core,
+        );
+        assert!(bright.x > ambient.x);
+        let invalid = MaterialSample {
+            albedo: Vec3::splat(f32::NAN),
+            normal: Vec3::ZERO,
+            roughness: f32::NAN,
+            f0: f32::INFINITY,
+            occlusion: f32::NAN,
+        };
+        assert!(sample_color(&open, invalid, Vec3::Z, 0.001, Stage::Light).is_finite());
+    }
+
+    #[test]
+    fn footprint_handles_perspective_and_orthographic_projection() {
+        for mode in [Mode::First, Mode::Third, Mode::Overhead] {
+            let camera = Camera::new(mode).prepare(120, 68, 16. / 9.);
+            let ray = camera.ray(60, 34);
+            let adjacent = [camera.ray(61, 34), camera.ray(60, 35)];
+            let make_hit = |distance| Hit {
+                position: ray.origin + ray.dir * distance,
+                distance,
+                normal: -ray.dir,
+                ..local_hit()
+            };
+            let near = surface_footprint(ray, adjacent, make_hit(2.));
+            let far = surface_footprint(ray, adjacent, make_hit(8.));
+            assert!(near.is_finite() && near > 0. && far.is_finite());
+            if mode == Mode::Overhead {
+                assert!((near - far).abs() < 1e-5);
+            } else {
+                assert!(far > near * 3.9);
+            }
+        }
+    }
+
+    #[test]
+    fn default_material_path_and_opt_in_none_preserve_legacy_cells() {
+        let legacy = LocalProbe {
+            enabled: false,
+            sample: None,
+            blocked: false,
+        };
+        let empty_opt_in = LocalProbe {
+            enabled: true,
+            sample: None,
+            blocked: false,
+        };
+        for mode in [Mode::First, Mode::Third, Mode::Overhead] {
+            for stage in [Stage::Core, Stage::Light, Stage::Water, Stage::Cloth] {
+                let mut a = Composer::default();
+                let mut b = Composer::default();
+                for _ in 0..2 {
+                    let (old, sa) =
+                        a.compose(&legacy, Camera::new(mode), 0., stage, 7, 5, 16. / 9.);
+                    let (new, sb) =
+                        b.compose(&empty_opt_in, Camera::new(mode), 0., stage, 7, 5, 16. / 9.);
+                    assert_eq!(
+                        bytemuck::cast_slice::<GlyphCell, u8>(&old),
+                        bytemuck::cast_slice::<GlyphCell, u8>(&new)
+                    );
+                    assert_stats_bits(&sa, &sb);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn local_material_frames_are_frozen_and_worker_deterministic() {
+        let scene = LocalProbe {
+            enabled: true,
+            sample: Some(local_sample()),
+            blocked: false,
+        };
+        let mut serial = Composer::default();
+        let mut parallel = Composer::with_threads(2).unwrap();
+        for mode in [Mode::First, Mode::Third, Mode::Overhead] {
+            serial.reset();
+            parallel.reset();
+            let (first, _) =
+                serial.compose(&scene, Camera::new(mode), 0., Stage::Light, 9, 7, 16. / 9.);
+            let (again, _) =
+                serial.compose(&scene, Camera::new(mode), 0., Stage::Light, 9, 7, 16. / 9.);
+            let (other, _) =
+                parallel.compose(&scene, Camera::new(mode), 0., Stage::Light, 9, 7, 16. / 9.);
+            assert_eq!(
+                bytemuck::cast_slice::<GlyphCell, u8>(&first),
+                bytemuck::cast_slice::<GlyphCell, u8>(&again)
+            );
+            assert_eq!(
+                bytemuck::cast_slice::<GlyphCell, u8>(&first),
+                bytemuck::cast_slice::<GlyphCell, u8>(&other)
+            );
+            assert!(first.iter().all(|c| c.color.iter().all(|v| v.is_finite())));
+        }
+    }
+
+    #[test]
+    fn footprint_glyph_key_releases_history_when_lod_changes() {
+        struct FilteredGlyph {
+            cutoff: f32,
+        }
+        impl Scene for FilteredGlyph {
+            fn trace(&self, ray: Ray, _: f32, _: Stage, _: bool) -> Option<Hit> {
+                Some(Hit {
+                    position: ray.origin + ray.dir,
+                    normal: -ray.dir,
+                    ..local_hit()
+                })
+            }
+            fn light_position(&self, _: f32) -> Vec3 {
+                Vec3::Y
+            }
+            fn pigment(&self, _: u32) -> Vec3 {
+                Vec3::splat(0.4)
+            }
+            fn glyph(&self, _: u32, _: Vec3, _: Vec3, _: f32) -> u8 {
+                b'!'
+            }
+            fn local_materials(&self) -> bool {
+                true
+            }
+            fn glyph_sample(&self, _: Hit, _: f32, footprint: f32) -> u8 {
+                if footprint > self.cutoff {
+                    b'='
+                } else {
+                    b'.'
+                }
+            }
+            fn glyph_sample_key(&self, _: Hit, footprint: f32) -> u32 {
+                u32::from(footprint > self.cutoff)
+            }
+        }
+        let mut near = Camera::new(Mode::Overhead);
+        near.zoom = 0.1;
+        let mut far = near;
+        far.zoom = 0.2;
+        // At 1x1, orthographic maximum-axis width = 10 * zoom * aspect.
+        let scene = FilteredGlyph { cutoff: 1.5 };
+        let mut composer = Composer::default();
+        let (a, _) = composer.compose(&scene, near, 0., Stage::Core, 1, 1, 1.);
+        let (b, stats) = composer.compose(&scene, far, 0., Stage::Core, 1, 1, 1.);
+        assert_eq!(a[0].id, b[0].id);
+        assert_eq!(a[0].glyph, b'.' as u32);
+        assert_eq!(b[0].glyph, b'=' as u32);
+        assert_eq!(stats.glyph_changes, 1);
+    }
 
     const TEST_FOLD: u32 = 21;
     const TEST_SURFACE_A: u32 = 22;

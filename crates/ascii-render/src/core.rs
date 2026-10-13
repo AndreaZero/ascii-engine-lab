@@ -55,6 +55,19 @@ pub struct Hit {
     pub local: Vec3,
 }
 
+/// Opt-in local, linear-color material response. `normal` is a world-space
+/// shading normal; it never replaces Hit::normal for visibility/shadow offsets.
+/// roughness is perceptual [0,1], f0 is scalar dielectric reflectance [0,1],
+/// and occlusion [0,1] is authored local cavity visibility (not computed GI).
+#[derive(Clone, Copy, Debug)]
+pub struct MaterialSample {
+    pub albedo: Vec3,
+    pub normal: Vec3,
+    pub roughness: f32,
+    pub f0: f32,
+    pub occlusion: f32,
+}
+
 /// Small replaceable producer contract, independent from the BLACKWATER fixture.
 /// Implementations used by Composer must be Sync and give deterministic answers
 /// for one tick/stage. Update simulation before composing, never inside a query.
@@ -72,6 +85,29 @@ pub trait Scene {
     fn light_position(&self, time: f32) -> Vec3;
     fn pigment(&self, material: u32) -> Vec3;
     fn glyph(&self, material: u32, local: Vec3, normal: Vec3, illumination: f32) -> u8;
+    /// Opt in to footprint/material sampling. False keeps the legacy path and
+    /// avoids generating neighboring camera rays. Return a stable value per tick.
+    fn local_materials(&self) -> bool {
+        false
+    }
+    /// Approximate world-space cell width (maximum axis), projected onto the
+    /// geometric tangent plane. Reflections use a path-length cone estimate,
+    /// without curved-surface ray differentials. None uses legacy shading.
+    fn material_sample(&self, _hit: Hit, _footprint: f32) -> Option<MaterialSample> {
+        None
+    }
+    fn glyph_sample(&self, hit: Hit, illumination: f32, _footprint: f32) -> u8 {
+        self.glyph(hit.material, hit.local, hit.normal, illumination)
+    }
+    /// Opt-in structure/LOD identity; include footprint-dependent glyph regions
+    /// here so history cannot retain fine detail after a filtering transition.
+    fn glyph_sample_key(&self, hit: Hit, _footprint: f32) -> u32 {
+        self.glyph_history_key(hit.material, hit.local, hit.normal)
+    }
+    /// Linear direct-light color for local materials only; legacy math is fixed.
+    fn light_color(&self) -> Vec3 {
+        Vec3::new(1., 0.58, 0.23)
+    }
     /// Optional structural region key for glyph history. It must not depend on
     /// illumination: change it when a seam, fold or other authored region must
     /// replace a held glyph. Zero preserves legacy illumination hysteresis for

@@ -15,6 +15,8 @@ The project is under active development. Its APIs and visual language are experi
 
 R6 extracts the renderer into `crates/ascii-render` and adds [Material Room](clients/material-room/README.md), a separate application that loads its own JSON scene. It demonstrates reuse and data editing; its simple shapes and material patterns are technical samples, not the target visual quality. See [verification and limits](REUSE.md).
 
+R7 adds a [dry/wet stone study](STONE_STUDY.md): carved cracks, chipped edges, local grain and a view-dependent light response, generated directly as glyphs. This is an isolated material experiment; the courtyard and Material Room keep their existing appearance.
+
 [Quick start](#getting-started) · [How it renders](#rendering-approach) · [Captures and benchmarks](#captures-and-measurements) · [Contributing](#contributing) · [Report an issue](https://github.com/AndreaZero/ascii-engine-lab/issues)
 
 ## Rendering approach
@@ -42,6 +44,7 @@ Current capabilities include:
 - Planar water with animated normals and single-bounce reflections.
 - An analytic character, procedural idle motion and a deforming cloak.
 - Material-specific glyph patterns and conservative temporal stabilization.
+- Opt-in local albedo, shading normal, roughness, scalar Fresnel reflectance and occlusion, with footprint-aware glyph detail.
 - Configurable output resolution, character density and CPU worker budgets.
 - Windowed rendering, GPU PNG capture and reproducible measurements.
 
@@ -129,6 +132,16 @@ cargo run --locked --release --example character_study -- --benchmark --camera a
 
 The baseline contains the previous character and materials. This comparison evaluates intentional visual changes, not an optimization at identical quality. The study's `--benchmark` mode skips GPU initialization and captures.
 
+The stone study separates form, surface and lighting, with matched dry/wet camera paths:
+
+```sh
+cargo run --locked --release --example stone_study -- --window --variant dry --camera third
+cargo run --locked --release --example stone_study -- --variant pair --camera all --frames 180 --out evidence/stone-study
+cargo run --locked --release --example stone_study -- --benchmark --variant pair --camera all --frames 180 --workers 8 --out evidence/stone-cpu
+```
+
+On Windows, `Avvia-pietra.cmd` opens the study (builds if missing). Rebuild with Cargo after source changes. Study controls: `1/2/3` views, `V` dry/wet, `B` baseline/shape, `O` orbit/light, `Space` pause, `R` restart, `H` labels. Its headless output is fixed at 1920×1080; `--grid` changes only cell count. See [study protocol, measurements and approximations](STONE_STUDY.md).
+
 CPU composition time, submission/wait time and synchronized offscreen frame time are separate measurements. **Submission/wait is not a GPU timestamp**, and offscreen timings are not window presentation FPS. Stability metrics cover matching surface IDs in the same screen cell; they are not a complete perceptual flicker measure.
 
 When reporting results, include the revision, operating system, CPU, GPU/backend/driver, profile or explicit dimensions, worker count, camera, stage, frame count and workload conditions.
@@ -157,7 +170,9 @@ Applications can implement `Scene` and feed the existing `Composer`. Query imple
 
 The demo prepares `LabScene::snapshot(time, stage)` once per composition. `Scene::glyph_history_key` lets materials identify structural changes, such as a moving fold or seam, so temporal stabilization can preserve lighting continuity while allowing those characters to change.
 
-These contracts are still evolving. Material Room depends only on `ascii-render` and its own scene data. Its bounded, versioned JSON format is client-owned; it is not a universal asset format. Reserved water/emissive IDs, fixed lighting response and laboratory camera/stage defaults remain API limitations. A stable SDK and broader hardware validation remain development goals.
+`Scene::local_materials` opts into the R7 path. `material_sample(hit, footprint)` supplies local surface properties; `glyph_sample` and `glyph_sample_key` share the same filtered structural classification. The default path preserves existing clients. This material API is experimental and is not yet exposed by Material Room's JSON format.
+
+These contracts are still evolving. Material Room depends only on `ascii-render` and its own scene data. Its bounded, versioned JSON format is client-owned; it is not a universal asset format. Reserved water/emissive IDs, one point light, artistic ambient/fog response and laboratory camera/stage defaults remain API limitations. A stable SDK and broader hardware validation remain development goals.
 
 ## Limitations and next steps
 
@@ -169,7 +184,7 @@ These contracts are still evolving. Material Room depends only on `ascii-render`
 - The project provides a small JSON editing/reload workflow; it does not yet provide gameplay systems, a visual editor, a general asset pipeline or networking.
 - Rendering queries currently run on the CPU. Further acceleration requires profiling and quality comparisons.
 
-Near-term visual work focuses on one stone specimen: form, cracks/joints, material response, and stability at different distances in all three views. Independent client reuse is verified within the small R6 scope; final art quality, richer material contracts and hardware validation remain open.
+The R7 stone specimen is the first richer surface experiment, with static/orbit/light/approach checks across three cell grids and views. It remains an authored block with shallow analytic cracks, filtered procedural grain and approximate wetness. Final art quality, silhouette antialiasing, richer content creation and broader hardware validation remain open. The next material studies can build on this contract without replacing all courtyard content at once.
 
 ## Contributing
 
@@ -198,6 +213,7 @@ Visual or GPU changes also need a real rendering check; CPU tests alone cannot e
 - [QUERY_PERFORMANCE.md](QUERY_PERFORMANCE.md) — shadow-query profiling and comparisons.
 - [CHARACTER_STUDY.md](CHARACTER_STUDY.md) — character/cloak study and motion evidence.
 - [REUSE.md](REUSE.md) — extracted renderer, independent client and content-edit verification.
+- [STONE_STUDY.md](STONE_STUDY.md) — stone form, dry/wet material, three-view motion and performance.
 
 These reports describe specific historical revisions and measurement sessions. Their results are not universal performance guarantees.
 

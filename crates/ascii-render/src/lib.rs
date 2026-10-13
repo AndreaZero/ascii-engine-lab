@@ -1,4 +1,4 @@
-//! Experimental v0.1 extraction; the R5 runtime algorithms remain unchanged.
+//! Experimental v0.1 renderer with an opt-in local material path (R7).
 //!
 //! A client supplies immutable [`core::Scene`] queries, materials and glyphs.
 //! There is no actor, courtyard, simulation, or asset-format dependency here.
@@ -8,8 +8,10 @@
 //! Compatibility constraints are intentional: `WATER = 3` and `EMISSIVE = 8`
 //! have renderer behavior, `Stage` retains the R5 names, and `Camera` retains
 //! its existing observer poses. Other named material constants are legacy IDs,
-//! not a universal material system. Lighting/fog/water response remains fixed
-//! in the compositor. Extraction alone does not remove these API limitations.
+//! not a universal material system. Local materials can supply albedo, shading
+//! normal, roughness, scalar F0 and occlusion; legacy scenes retain their prior
+//! response. Lighting still has one point source and artistic ambient/fog;
+//! water retains its specialized path. This is not yet a stable material API.
 
 pub mod budget;
 pub mod camera;
