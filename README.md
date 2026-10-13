@@ -17,6 +17,8 @@ R6 extracts the renderer into `crates/ascii-render` and adds [Material Room](cli
 
 R7 adds a [dry/wet stone study](STONE_STUDY.md): carved cracks, chipped edges, local grain and a view-dependent light response, generated directly as glyphs. This is an isolated material experiment; the courtyard and Material Room keep their existing appearance.
 
+R8 refines [wet-stone readability](WET_READABILITY.md): low-light glyph families retain more grain while per-cell colors, geometry and lighting remain identical. The previous wet appearance remains available for a matched comparison.
+
 [Quick start](#getting-started) · [How it renders](#rendering-approach) · [Captures and benchmarks](#captures-and-measurements) · [Contributing](#contributing) · [Report an issue](https://github.com/AndreaZero/ascii-engine-lab/issues)
 
 ## Rendering approach
@@ -140,7 +142,7 @@ cargo run --locked --release --example stone_study -- --variant pair --camera al
 cargo run --locked --release --example stone_study -- --benchmark --variant pair --camera all --frames 180 --workers 8 --out evidence/stone-cpu
 ```
 
-On Windows, `Avvia-pietra.cmd` opens the study (builds if missing). Rebuild with Cargo after source changes. Study controls: `1/2/3` views, `V` dry/wet, `B` baseline/shape, `O` orbit/light, `Space` pause, `R` restart, `H` labels. Its headless output is fixed at 1920×1080; `--grid` changes only cell count. See [study protocol, measurements and approximations](STONE_STUDY.md).
+On Windows, `Avvia-pietra.cmd` opens the study (builds if missing). Rebuild with Cargo after source changes. Study controls: `1/2/3` views, `V` dry/wet, `C` wet R7/R8 comparison, `B` baseline/shape, `O` orbit/light, `Space` pause, `R` restart, `H` labels. Its headless output is fixed at 1920×1080; `--grid` changes only cell count. Use `--variant compare` to capture wet R7/R8 or `--variant trio` for dry/R7 wet/R8 wet. See [original study](STONE_STUDY.md) and [readability refinement](WET_READABILITY.md).
 
 CPU composition time, submission/wait time and synchronized offscreen frame time are separate measurements. **Submission/wait is not a GPU timestamp**, and offscreen timings are not window presentation FPS. Stability metrics cover matching surface IDs in the same screen cell; they are not a complete perceptual flicker measure.
 
@@ -214,6 +216,7 @@ Visual or GPU changes also need a real rendering check; CPU tests alone cannot e
 - [CHARACTER_STUDY.md](CHARACTER_STUDY.md) — character/cloak study and motion evidence.
 - [REUSE.md](REUSE.md) — extracted renderer, independent client and content-edit verification.
 - [STONE_STUDY.md](STONE_STUDY.md) — stone form, dry/wet material, three-view motion and performance.
+- [WET_READABILITY.md](WET_READABILITY.md) — matched wet-stone glyph refinement and stone-only diagnostics.
 
 These reports describe specific historical revisions and measurement sessions. Their results are not universal performance guarantees.
 

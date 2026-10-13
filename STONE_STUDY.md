@@ -1,5 +1,7 @@
 # R7 — pietra asciutta e bagnata
 
+Aggiornamento successivo: [R8](WET_READABILITY.md) affina la leggibilità dei glifi bagnati. Il presente report conserva le misure R7; nell'eseguibile corrente `wet-r7` riproduce il bagnato qui descritto, `wet` usa la nuova grammatica e `all` comprende entrambe le versioni.
+
 Provino del 13 ottobre 2026: un blocco di pietra lavorato, con frattura ramificata incisa, bordi irregolari, scheggiature e materiale locale. Camera e luce osservano la stessa forma asciutta/bagnata nelle tre visuali. L'immagine nasce dalle query semantiche e dai caratteri; non esiste una scena a mesh renderizzata e poi convertita.
 
 È una prova isolata di forma, superficie e luce. Cortile e Material Room mantengono il proprio aspetto. La qualità finale delle reference, un editor di materiali o una simulazione di bagnatura non sono risultati di questa tranche.

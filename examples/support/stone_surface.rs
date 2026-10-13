@@ -236,6 +236,29 @@ pub fn glyph(hit: Hit, illumination: f32, footprint: f32) -> u8 {
     family[level]
 }
 
+/// R8 artistic ink variant, selected only by the wet study host. The shaded RGB
+/// and MaterialSample are untouched. Retain filtered grain families where R7
+/// converged to points/commas; deep darkness, cavities and light >=0.13 retain
+/// their exact R7 glyphs. Switching study variants requires a history reset.
+pub fn wet_glyph(hit: Hit, illumination: f32, footprint: f32) -> u8 {
+    if !(0.025..0.13).contains(&illumination) {
+        return glyph(hit, illumination, footprint);
+    }
+    let band = usize::from(illumination >= 0.07);
+    let family: &[u8; 2] = match structural_region(hit, footprint) {
+        0 => b" .", // Carved cavities keep R7's recessive response exactly.
+        1 => b":c", // Worn edge.
+        2 => b",c", // Sediment accents remain quieter than the grain body.
+        3 => b":o", // Pores retain a rounded family once locally visible.
+        4 => b";x", // Mineral lens.
+        5 => b":c",
+        6 => b"co",
+        7 => b";x",
+        _ => b"cc",
+    };
+    family[band]
+}
+
 /// Exact filtered family signature used by glyph(), independent of brightness,
 /// view and wetness. The footprint is part of the classification, not quantized
 /// separately into arbitrary LOD bins.
@@ -366,5 +389,50 @@ mod tests {
         let b = mineral_noise(Vec3::new(1.00001, -0.48, 2.71));
         assert!((a.0 - b.0).abs() < 0.0001);
         assert!((a.1 - b.1).length() < 0.001);
+    }
+
+    #[test]
+    fn wet_ink_preserves_darkness_highlights_cavities_and_filtered_history() {
+        let mut signatures = std::collections::BTreeMap::new();
+        let mut recovered = std::collections::BTreeSet::new();
+        let levels = [
+            0.0, 0.0249, 0.025, 0.05, 0.0699, 0.07, 0.10, 0.1299, 0.13, 0.3, 0.6, 1.0,
+        ];
+        let mut changed = 0;
+        for i in -20..=20 {
+            for j in -14..=14 {
+                let h = hit(Vec3::new(i as f32 * 0.057, j as f32 * 0.059, 0.86), Vec3::Z);
+                for footprint in [0.004, 0.02, 0.05, 0.15] {
+                    let region = structural_region(h, footprint);
+                    let signature = levels.map(|light| wet_glyph(h, light, footprint));
+                    if let Some(previous) = signatures.insert(history_key(h, footprint), signature)
+                    {
+                        assert_eq!(
+                            previous, signature,
+                            "wet ink must share the filtered history key"
+                        );
+                    }
+                    for light in levels {
+                        let old = glyph(h, light, footprint);
+                        let new = wet_glyph(h, light, footprint);
+                        assert!((32..=126).contains(&new));
+                        if !(0.025..0.13).contains(&light) || region == 0 {
+                            assert_eq!(new, old);
+                        } else if new != old {
+                            changed += 1;
+                            recovered.insert(new);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(changed > 0);
+        assert!(
+            recovered.contains(&b'c') && recovered.contains(&b'o') && recovered.contains(&b'x')
+        );
+        let h = hit(Vec3::new(0.4, 0.4, 0.86), Vec3::Z);
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
+            assert_eq!(wet_glyph(h, invalid, 0.02), glyph(h, invalid, 0.02));
+        }
     }
 }
