@@ -5,7 +5,12 @@ edition = "2021"
 description = "Direct semantic glyph rendering laboratory; no mesh-world framebuffer"
 license = "MIT"
 
+[workspace]
+members = [".", "crates/ascii-render", "clients/material-room"]
+resolver = "2"
+
 [dependencies]
+ascii-render = { path = "crates/ascii-render" }
 wgpu = "=26.0.1"
 winit = "=0.30.12"
 glam = "=0.30.9"

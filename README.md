@@ -13,6 +13,8 @@ The current demo is a small environment with a moving light, water reflections a
 
 The project is under active development. Its APIs and visual language are experimental; it is not yet a production-ready game engine.
 
+R6 extracts the renderer into `crates/ascii-render` and adds [Material Room](clients/material-room/README.md), a separate application that loads its own JSON scene. It demonstrates reuse and data editing; its simple shapes and material patterns are technical samples, not the target visual quality. See [verification and limits](REUSE.md).
+
 [Quick start](#getting-started) · [How it renders](#rendering-approach) · [Captures and benchmarks](#captures-and-measurements) · [Contributing](#contributing) · [Report an issue](https://github.com/AndreaZero/ascii-engine-lab/issues)
 
 ## Rendering approach
@@ -137,13 +139,15 @@ Generated captures, videos, binaries and raw recordings are excluded from Git. H
 
 | Path | Responsibility |
 | --- | --- |
-| `src/core.rs` | Rays, hits, glyph cells, scene contract and intersections |
-| `src/budget.rs` | Quality profiles and CPU worker budgets |
-| `src/camera.rs` | Perspective and overhead projections |
-| `src/frame.rs` | Visibility, lighting, reflection and glyph history |
-| `src/gpu.rs`, `src/glyph.wgsl` | GPU presentation and capture |
+| `crates/ascii-render/src/core.rs` | Rays, hits, glyph cells, scene contract and intersections |
+| `crates/ascii-render/src/budget.rs` | Quality profiles and CPU worker budgets |
+| `crates/ascii-render/src/camera.rs` | Perspective and overhead projections |
+| `crates/ascii-render/src/frame.rs` | Visibility, lighting, reflection and glyph history |
+| `crates/ascii-render/src/gpu.rs`, `glyph.wgsl` | GPU presentation and capture |
 | `src/world.rs`, `src/actor.rs` | Replaceable environment and character fixtures |
 | `src/main.rs` | Window, input, CLI and measurements |
+| `src/lib.rs` | Lab adapter and compatibility reexports of the extracted renderer |
+| `clients/material-room/` | Independent JSON scene loader, immutable snapshots and application |
 | `examples/` | Controlled studies and benchmark programs |
 | `tests/` | Regression and traversal comparisons |
 | `scripts/` | Measurement and verification utilities |
@@ -153,7 +157,7 @@ Applications can implement `Scene` and feed the existing `Composer`. Query imple
 
 The demo prepares `LabScene::snapshot(time, stage)` once per composition. `Scene::glyph_history_key` lets materials identify structural changes, such as a moving fold or seam, so temporal stabilization can preserve lighting continuity while allowing those characters to change.
 
-These contracts are still evolving. A stable SDK, portable content format and independent application integration remain development goals.
+These contracts are still evolving. Material Room depends only on `ascii-render` and its own scene data. Its bounded, versioned JSON format is client-owned; it is not a universal asset format. Reserved water/emissive IDs, fixed lighting response and laboratory camera/stage defaults remain API limitations. A stable SDK and broader hardware validation remain development goals.
 
 ## Limitations and next steps
 
@@ -162,10 +166,10 @@ These contracts are still evolving. A stable SDK, portable content format and in
 - Water uses a planar surface and one reflection bounce; refraction and fluid simulation are not implemented.
 - Cloth motion is procedural, with anchored regions and local deformation. It is not a physical cloth solver, and grazing intersections need further work.
 - Fire, general vegetation animation and destructible environments are future capabilities.
-- The project does not yet provide gameplay systems, an editor, asset authoring tools or networking.
+- The project provides a small JSON editing/reload workflow; it does not yet provide gameplay systems, a visual editor, a general asset pipeline or networking.
 - Rendering queries currently run on the CPU. Further acceleration requires profiling and quality comparisons.
 
-Near-term work focuses on visual stability, separating authored content from the demo fixture, exercising the renderer from an independent client and expanding hardware validation.
+Near-term visual work focuses on one stone specimen: form, cracks/joints, material response, and stability at different distances in all three views. Independent client reuse is verified within the small R6 scope; final art quality, richer material contracts and hardware validation remain open.
 
 ## Contributing
 
@@ -176,10 +180,10 @@ Use [issues](https://github.com/AndreaZero/ascii-engine-lab/issues) for bug repo
 Before submitting code, run the relevant checks:
 
 ```sh
-cargo fmt --check
-cargo test --locked
-cargo clippy --locked --all-targets -- -D warnings
-cargo build --locked --release
+cargo fmt --all -- --check
+cargo test --workspace --all-targets --locked
+cargo clippy --workspace --locked --all-targets -- -D warnings
+cargo build --workspace --locked --release --bins
 ```
 
 Keep changes scoped to a clear problem. Preserve direct character generation, deterministic snapshot queries and the source fixtures used by regression tests. Avoid committing generated media, build output, credentials or machine-specific configuration. Preserve `Cargo.lock` for reproducible dependencies.
@@ -192,6 +196,8 @@ Visual or GPU changes also need a real rendering check; CPU tests alone cannot e
 - [PERFORMANCE.md](PERFORMANCE.md) — CPU parallelism experiments.
 - [PORTABILITY.md](PORTABILITY.md) — execution budgets, snapshots and compatibility checks.
 - [QUERY_PERFORMANCE.md](QUERY_PERFORMANCE.md) — shadow-query profiling and comparisons.
+- [CHARACTER_STUDY.md](CHARACTER_STUDY.md) — character/cloak study and motion evidence.
+- [REUSE.md](REUSE.md) — extracted renderer, independent client and content-edit verification.
 
 These reports describe specific historical revisions and measurement sessions. Their results are not universal performance guarantees.
 

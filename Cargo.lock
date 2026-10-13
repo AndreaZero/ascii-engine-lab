@@ -93,11 +93,37 @@ checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
 name = "ascii-engine-lab"
 version = "0.1.0"
 dependencies = [
+ "ascii-render",
  "bytemuck",
  "font8x8",
  "glam",
  "png",
  "pollster",
+ "rayon",
+ "serde_json",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "ascii-material-room"
+version = "0.1.0"
+dependencies = [
+ "ascii-render",
+ "glam",
+ "pollster",
+ "serde_json",
+ "winit",
+]
+
+[[package]]
+name = "ascii-render"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "font8x8",
+ "glam",
+ "png",
  "rayon",
  "serde_json",
  "wgpu",

@@ -1,0 +1,13 @@
+[package]
+name = "ascii-material-room"
+version = "0.1.0"
+edition = "2021"
+description = "Independent, data-driven client of the experimental ASCII renderer"
+license = "MIT"
+
+[dependencies]
+ascii-render = { path = "../../crates/ascii-render" }
+glam = "=0.30.9"
+serde_json = "1.0"
+pollster = "0.4"
+winit = "=0.30.12"

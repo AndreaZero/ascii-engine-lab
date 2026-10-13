@@ -1,10 +1,8 @@
 pub mod actor;
-pub mod budget;
-pub mod camera;
-pub mod core;
-pub mod frame;
-pub mod gpu;
 pub mod world;
+// Compatibility facade for the historical lab host. Independent applications
+// depend directly on ascii-render and do not compile these fixture modules.
+pub use ascii_render::{budget, camera, core, frame, gpu};
 
 /// Laboratory content adapter. Another application can supply its own Scene.
 pub struct LabScene;
