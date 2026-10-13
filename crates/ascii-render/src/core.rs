@@ -68,6 +68,17 @@ pub struct MaterialSample {
     pub occlusion: f32,
 }
 
+/// Optional conductor endpoint for a local material. `f0` is linear RGB
+/// reflectance at normal incidence [0,1], before blending with MaterialSample's
+/// dielectric f0. `metalness` [0,1] blends those endpoints and removes diffuse
+/// light, including the approximate ambient term. This is an isotropic RGB
+/// approximation, not complex-IOR Fresnel, an oxide-layer model, or IBL.
+#[derive(Clone, Copy, Debug)]
+pub struct MetallicSample {
+    pub f0: Vec3,
+    pub metalness: f32,
+}
+
 /// Small replaceable producer contract, independent from the BLACKWATER fixture.
 /// Implementations used by Composer must be Sync and give deterministic answers
 /// for one tick/stage. Update simulation before composing, never inside a query.
@@ -94,6 +105,15 @@ pub trait Scene {
     /// geometric tangent plane. Reflections use a path-length cone estimate,
     /// without curved-surface ray differentials. None uses legacy shading.
     fn material_sample(&self, _hit: Hit, _footprint: f32) -> Option<MaterialSample> {
+        None
+    }
+    /// Queried only for non-emissive local materials with material_sample=Some.
+    /// None or zero metalness preserves the dielectric calculation exactly.
+    /// Finite values are clamped; nonfinite metalness becomes zero and nonfinite
+    /// f0 channels use the sanitized dielectric f0. Pure metal has no ambient
+    /// contribution: without specular environment lighting it is black in Core
+    /// and in shadow. Producers must return deterministic answers per snapshot.
+    fn metallic_sample(&self, _hit: Hit, _footprint: f32) -> Option<MetallicSample> {
         None
     }
     fn glyph_sample(&self, hit: Hit, illumination: f32, _footprint: f32) -> u8 {

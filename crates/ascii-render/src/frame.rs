@@ -325,7 +325,8 @@ fn unit_value(value: f32, fallback: f32) -> f32 {
 
 // GGX + Smith height-correlated visibility + Schlick + Lambert, following the
 // primary Filament equations: https://google.github.io/filament/main/filament.html
-// (Standard model summary). Scalar F0, authored cavity, legacy artistic light
+// (Standard model summary; metallic remapping in section 4.8.3).
+// Default scalar F0, authored cavity, legacy artistic light
 // attenuation and a world-unit footprint roughness floor are simplifications;
 // this is neither calibrated physical transport nor a full specular-AA filter.
 #[allow(clippy::too_many_arguments)]
@@ -339,6 +340,16 @@ fn shade_material(
     stage: Stage,
     lighting: &PreparedLighting,
 ) -> Vec3 {
+    // Keep the dielectric arithmetic below untouched when the extension is
+    // absent/zero. RGB Schlick is an approximation to conductor Fresnel, not
+    // PBRT's spectral eta/k response; there is no specular environment term.
+    let metallic = scene.metallic_sample(hit, footprint).and_then(|sample| {
+        let metalness = unit_value(sample.metalness, 0.);
+        (metalness > 0.).then_some(MetallicSample {
+            metalness,
+            ..sample
+        })
+    });
     let albedo = Vec3::from_array(sample.albedo.to_array().map(|v| unit_value(v, 0.)));
     let occlusion = unit_value(sample.occlusion, 1.);
     let mut n = sample.normal.normalize_or_zero();
@@ -349,6 +360,11 @@ fn shade_material(
         n = -n;
     }
     let ambient = albedo * (0.07 + 0.10 * n.dot(lighting.moon).max(0.)) * occlusion;
+    let ambient = if let Some(metal) = metallic {
+        ambient * (1. - metal.metalness)
+    } else {
+        ambient
+    };
     if stage == Stage::Core {
         return ambient;
     }
@@ -391,10 +407,24 @@ fn shade_material(
     let visibility_den =
         no_l * (no_v * no_v * (1. - a2) + a2).sqrt() + no_v * (no_l * no_l * (1. - a2) + a2).sqrt();
     let visibility = 0.5 / visibility_den.max(1e-5);
-    let f0 = unit_value(sample.f0, 0.04);
-    let fresnel = f0 + (1. - f0) * (1. - vo_h).powi(5);
-    let specular = (distribution * visibility * fresnel).min(64.);
-    let diffuse = albedo * ((1. - fresnel) / std::f32::consts::PI);
+    let (diffuse, specular) = if let Some(metal) = metallic {
+        let dielectric_f0 = unit_value(sample.f0, 0.04);
+        let conductor_f0 =
+            Vec3::from_array(metal.f0.to_array().map(|v| unit_value(v, dielectric_f0)));
+        let f0 =
+            Vec3::splat(dielectric_f0) * (1. - metal.metalness) + conductor_f0 * metal.metalness;
+        let fresnel = f0 + (Vec3::ONE - f0) * (1. - vo_h).powi(5);
+        let specular = (fresnel * (distribution * visibility)).min(Vec3::splat(64.));
+        let diffuse =
+            albedo * (Vec3::ONE - fresnel) * ((1. - metal.metalness) / std::f32::consts::PI);
+        (diffuse, specular)
+    } else {
+        let f0 = unit_value(sample.f0, 0.04);
+        let fresnel = f0 + (1. - f0) * (1. - vo_h).powi(5);
+        let specular = (distribution * visibility * fresnel).min(64.);
+        let diffuse = albedo * ((1. - fresnel) / std::f32::consts::PI);
+        (diffuse, Vec3::splat(specular))
+    };
     let light = Vec3::from_array(lighting.color.to_array().map(|v| {
         if v.is_finite() {
             v.clamp(0., 16.)
@@ -403,7 +433,7 @@ fn shade_material(
         }
     }));
     let attenuation = 4.5 / (1. + distance * distance * 0.45);
-    ambient + (diffuse + Vec3::splat(specular)) * light * (no_l * attenuation * occlusion)
+    ambient + (diffuse + specular) * light * (no_l * attenuation * occlusion)
 }
 
 fn shade(
@@ -474,10 +504,46 @@ mod tests {
     use super::*;
     use crate::camera::Mode;
 
+    #[derive(Clone, Copy)]
     struct LocalProbe {
         enabled: bool,
         sample: Option<MaterialSample>,
         blocked: bool,
+    }
+    #[derive(Clone, Copy)]
+    struct MetalProbe {
+        base: LocalProbe,
+        metal: Option<MetallicSample>,
+    }
+    impl Scene for MetalProbe {
+        fn trace(&self, ray: Ray, time: f32, stage: Stage, water: bool) -> Option<Hit> {
+            self.base.trace(ray, time, stage, water)
+        }
+        fn occluded(&self, ray: Ray, time: f32, stage: Stage, max: f32) -> bool {
+            self.base.occluded(ray, time, stage, max)
+        }
+        fn light_position(&self, time: f32) -> Vec3 {
+            self.base.light_position(time)
+        }
+        fn pigment(&self, material: u32) -> Vec3 {
+            self.base.pigment(material)
+        }
+        fn glyph(&self, m: u32, l: Vec3, n: Vec3, i: f32) -> u8 {
+            self.base.glyph(m, l, n, i)
+        }
+        fn local_materials(&self) -> bool {
+            self.base.local_materials()
+        }
+        fn material_sample(&self, hit: Hit, footprint: f32) -> Option<MaterialSample> {
+            self.base.material_sample(hit, footprint)
+        }
+        fn metallic_sample(&self, _: Hit, _: f32) -> Option<MetallicSample> {
+            assert!(self.base.enabled && self.base.sample.is_some());
+            self.metal
+        }
+        fn light_color(&self) -> Vec3 {
+            self.base.light_color()
+        }
     }
     impl Scene for LocalProbe {
         fn trace(&self, _: Ray, _: f32, _: Stage, _: bool) -> Option<Hit> {
@@ -541,7 +607,7 @@ mod tests {
         }
     }
     fn sample_color(
-        scene: &LocalProbe,
+        scene: &impl Scene,
         sample: MaterialSample,
         view: Vec3,
         footprint: f32,
@@ -557,6 +623,180 @@ mod tests {
             stage,
             &local_lighting(),
         )
+    }
+
+    fn metal_probe(metal: Option<MetallicSample>) -> MetalProbe {
+        MetalProbe {
+            base: LocalProbe {
+                enabled: true,
+                sample: Some(local_sample()),
+                blocked: false,
+            },
+            metal,
+        }
+    }
+
+    #[test]
+    fn metallic_none_zero_and_invalid_weight_preserve_dielectric_bits() {
+        let absent = metal_probe(None);
+        for weight in [0., -1., f32::NAN, f32::INFINITY] {
+            let zero = metal_probe(Some(MetallicSample {
+                f0: Vec3::new(0.9, f32::NAN, 0.2),
+                metalness: weight,
+            }));
+            for stage in [Stage::Core, Stage::Light, Stage::Water, Stage::Cloth] {
+                for view in [Vec3::Z, Vec3::new(0.6, 0., 0.8)] {
+                    let expected = sample_color(&absent.base, local_sample(), view, 0.03, stage);
+                    for scene in [&absent, &zero] {
+                        let actual = sample_color(scene, local_sample(), view, 0.03, stage);
+                        assert_eq!(
+                            actual.to_array().map(f32::to_bits),
+                            expected.to_array().map(f32::to_bits)
+                        );
+                    }
+                }
+            }
+        }
+        // A conductor hook alone must not opt a legacy/None material into it.
+        for enabled in [false, true] {
+            let ignored = MetalProbe {
+                base: LocalProbe {
+                    enabled,
+                    sample: None,
+                    blocked: false,
+                },
+                metal: Some(MetallicSample {
+                    f0: Vec3::ONE,
+                    metalness: 1.,
+                }),
+            };
+            Composer::default().compose(
+                &ignored,
+                Camera::new(Mode::First),
+                0.,
+                Stage::Light,
+                3,
+                3,
+                1.,
+            );
+        }
+    }
+
+    #[test]
+    fn pure_conductor_has_no_diffuse_or_ambient_and_has_colored_view_response() {
+        let scene = metal_probe(Some(MetallicSample {
+            f0: Vec3::new(0.9, 0.6, 0.3),
+            metalness: 1.,
+        }));
+        let sample = MaterialSample {
+            roughness: 0.55,
+            ..local_sample()
+        };
+        assert_eq!(
+            sample_color(&scene, sample, Vec3::Z, 0.01, Stage::Core),
+            Vec3::ZERO
+        );
+        let blocked = MetalProbe {
+            base: LocalProbe {
+                blocked: true,
+                ..scene.base
+            },
+            ..scene
+        };
+        assert_eq!(
+            sample_color(&blocked, sample, Vec3::Z, 0.01, Stage::Light),
+            Vec3::ZERO
+        );
+        let front = sample_color(&scene, sample, Vec3::Z, 0.01, Stage::Light);
+        assert!(front.x > front.y && front.y > front.z && front.z > 0.);
+        // At normal incidence, conductor channel ratios follow RGB F0.
+        assert!((front.x / front.y - 1.5).abs() < 1e-5);
+        for view in [Vec3::Z, Vec3::new(0.6, 0., 0.8)] {
+            let color = sample_color(&scene, sample, view, 0.01, Stage::Light);
+            let changed_albedo = sample_color(
+                &scene,
+                MaterialSample {
+                    albedo: Vec3::new(0.8, 0.1, 0.4),
+                    ..sample
+                },
+                view,
+                0.01,
+                Stage::Light,
+            );
+            assert_eq!(
+                color.to_array().map(f32::to_bits),
+                changed_albedo.to_array().map(f32::to_bits)
+            );
+            assert!(color.x > color.y && color.y > color.z);
+        }
+        let angled = sample_color(&scene, sample, Vec3::new(0.6, 0., 0.8), 0.01, Stage::Light);
+        assert!(front.x > angled.x);
+        let mixed = metal_probe(Some(MetallicSample {
+            metalness: 0.5,
+            ..scene.metal.unwrap()
+        }));
+        let dielectric = sample_color(&scene.base, sample, Vec3::Z, 0.01, Stage::Core);
+        assert_eq!(
+            sample_color(&mixed, sample, Vec3::Z, 0.01, Stage::Core),
+            dielectric * 0.5
+        );
+    }
+
+    #[test]
+    fn conductor_invalid_channels_and_excess_weight_are_bounded() {
+        let invalid = metal_probe(Some(MetallicSample {
+            f0: Vec3::new(-2., f32::NAN, 3.),
+            metalness: 2.,
+        }));
+        let sanitized = metal_probe(Some(MetallicSample {
+            f0: Vec3::new(0., local_sample().f0, 1.),
+            metalness: 1.,
+        }));
+        for view in [Vec3::Z, Vec3::new(0.6, 0., 0.8)] {
+            let actual = sample_color(&invalid, local_sample(), view, 0.02, Stage::Light);
+            let expected = sample_color(&sanitized, local_sample(), view, 0.02, Stage::Light);
+            assert!(actual.is_finite() && actual.min_element() >= 0.);
+            assert_eq!(
+                actual.to_array().map(f32::to_bits),
+                expected.to_array().map(f32::to_bits)
+            );
+        }
+    }
+
+    #[test]
+    fn conductor_cells_and_history_are_worker_deterministic() {
+        for metalness in [0., 0.5, 1.] {
+            let scene = metal_probe(Some(MetallicSample {
+                f0: Vec3::new(0.85, 0.65, 0.4),
+                metalness,
+            }));
+            for mode in [Mode::First, Mode::Third, Mode::Overhead] {
+                for workers in [2, 4] {
+                    let mut serial = Composer::default();
+                    let mut parallel = Composer::with_threads(workers).unwrap();
+                    let mut dielectric = Composer::default();
+                    for stage in [Stage::Core, Stage::Light, Stage::Light] {
+                        let camera = Camera::new(mode);
+                        let (a, sa) = serial.compose(&scene, camera, 0., stage, 9, 7, 16. / 9.);
+                        let (b, sb) = parallel.compose(&scene, camera, 0., stage, 9, 7, 16. / 9.);
+                        assert_eq!(
+                            bytemuck::cast_slice::<GlyphCell, u8>(&a),
+                            bytemuck::cast_slice::<GlyphCell, u8>(&b)
+                        );
+                        assert_stats_bits(&sa, &sb);
+                        if metalness == 0. {
+                            let (old, so) =
+                                dielectric.compose(&scene.base, camera, 0., stage, 9, 7, 16. / 9.);
+                            assert_eq!(
+                                bytemuck::cast_slice::<GlyphCell, u8>(&a),
+                                bytemuck::cast_slice::<GlyphCell, u8>(&old)
+                            );
+                            assert_stats_bits(&sa, &so);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

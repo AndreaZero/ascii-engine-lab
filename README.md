@@ -19,6 +19,8 @@ R7 adds a [dry/wet stone study](STONE_STUDY.md): carved cracks, chipped edges, l
 
 R8 refines [wet-stone readability](WET_READABILITY.md): low-light glyph families retain more grain while per-cell colors, geometry and lighting remain identical. The previous wet appearance remains available for a matched comparison.
 
+R9 explores [worked and oxidized steel](METAL_STUDY.md) on the same analytic convex shield, with optional RGB conductor response. See [project status](PROJECT_STATUS.md) for verified capabilities, remaining limits and the source of truth for the website/documentation.
+
 [Quick start](#getting-started) · [How it renders](#rendering-approach) · [Captures and benchmarks](#captures-and-measurements) · [Contributing](#contributing) · [Report an issue](https://github.com/AndreaZero/ascii-engine-lab/issues)
 
 ## Rendering approach
@@ -47,6 +49,7 @@ Current capabilities include:
 - An analytic character, procedural idle motion and a deforming cloak.
 - Material-specific glyph patterns and conservative temporal stabilization.
 - Opt-in local albedo, shading normal, roughness, scalar Fresnel reflectance and occlusion, with footprint-aware glyph detail.
+- Optional RGB conductor reflectance and metalness, with a dedicated worked/oxidized steel sample.
 - Configurable output resolution, character density and CPU worker budgets.
 - Windowed rendering, GPU PNG capture and reproducible measurements.
 
@@ -144,6 +147,8 @@ cargo run --locked --release --example stone_study -- --benchmark --variant pair
 
 On Windows, `Avvia-pietra.cmd` opens the study (builds if missing). Rebuild with Cargo after source changes. Study controls: `1/2/3` views, `V` dry/wet, `C` wet R7/R8 comparison, `B` baseline/shape, `O` orbit/light, `Space` pause, `R` restart, `H` labels. Its headless output is fixed at 1920×1080; `--grid` changes only cell count. Use `--variant compare` to capture wet R7/R8 or `--variant trio` for dry/R7 wet/R8 wet. See [original study](STONE_STUDY.md) and [readability refinement](WET_READABILITY.md).
 
+For the metal sample, run `cargo run --locked --release --example metal_study -- --window --variant forged --camera third`, or use `Avvia-metallo.cmd` on Windows. `V` switches worked/oxidized steel, `B` compares a uniform metal surface, and `1/2/3` switch views. See [metal study](METAL_STUDY.md) for capture commands, measurements and lighting limits.
+
 CPU composition time, submission/wait time and synchronized offscreen frame time are separate measurements. **Submission/wait is not a GPU timestamp**, and offscreen timings are not window presentation FPS. Stability metrics cover matching surface IDs in the same screen cell; they are not a complete perceptual flicker measure.
 
 When reporting results, include the revision, operating system, CPU, GPU/backend/driver, profile or explicit dimensions, worker count, camera, stage, frame count and workload conditions.
@@ -173,6 +178,8 @@ Applications can implement `Scene` and feed the existing `Composer`. Query imple
 The demo prepares `LabScene::snapshot(time, stage)` once per composition. `Scene::glyph_history_key` lets materials identify structural changes, such as a moving fold or seam, so temporal stabilization can preserve lighting continuity while allowing those characters to change.
 
 `Scene::local_materials` opts into the R7 path. `material_sample(hit, footprint)` supplies local surface properties; `glyph_sample` and `glyph_sample_key` share the same filtered structural classification. The default path preserves existing clients. This material API is experimental and is not yet exposed by Material Room's JSON format.
+
+R9 adds optional `metallic_sample(hit, footprint)` for the RGB conductor endpoint and metalness. `None` or zero metalness preserves the dielectric path. Pure metal has no diffuse component; environment reflections and anisotropy are not implemented. This extension is also outside Material Room's current JSON format.
 
 These contracts are still evolving. Material Room depends only on `ascii-render` and its own scene data. Its bounded, versioned JSON format is client-owned; it is not a universal asset format. Reserved water/emissive IDs, one point light, artistic ambient/fog response and laboratory camera/stage defaults remain API limitations. A stable SDK and broader hardware validation remain development goals.
 
@@ -217,6 +224,8 @@ Visual or GPU changes also need a real rendering check; CPU tests alone cannot e
 - [REUSE.md](REUSE.md) — extracted renderer, independent client and content-edit verification.
 - [STONE_STUDY.md](STONE_STUDY.md) — stone form, dry/wet material, three-view motion and performance.
 - [WET_READABILITY.md](WET_READABILITY.md) — matched wet-stone glyph refinement and stone-only diagnostics.
+- [METAL_STUDY.md](METAL_STUDY.md) — conductor response, worked/oxidized steel and three-view verification.
+- [PROJECT_STATUS.md](PROJECT_STATUS.md) — shared technical status for the website and documentation.
 
 These reports describe specific historical revisions and measurement sessions. Their results are not universal performance guarantees.
 
