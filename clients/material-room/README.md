@@ -2,6 +2,23 @@
 
 Questa applicazione dipende da `ascii-render`, non da `ascii-engine-lab`. Carica oggetti, materiali, luce e camere da un JSON validato; prepara uno snapshot immutabile per fotogramma e lo passa al compositore. Non importa figura o cortile BLACKWATER. La versione 2 dei dati espone superfici locali, conduttori e ambiente limitato; la versione 1 conserva il percorso R6. Forme e materiali sono dimostrativi, non il target artistico finale né una API stabile.
 
+## Query R13
+
+R13 verifica un helper box con limite esatto, ma la sua integrazione sperimentale
+riduce assi e peggiora i tempi CPU. Il percorso ordinario conserva quindi
+algoritmo e ombre R12, senza una nuova modalità da scegliere. JSON, materiali,
+trasformazioni, ordine e pareggi restano invariati. Nessuna gerarchia spaziale
+o accelerazione runtime dichiarata. Risultati e limiti in
+[QUERY_ACCELERATION](../../QUERY_ACCELERATION.md).
+
+I metodi `Snapshot::trace_bounded_counted` e `Snapshot::occluded_bounded_counted`
+esercitano esplicitamente il candidato e ne restituiscono contatori locali,
+fuori dalle misure temporali. Non misurano il lavoro del normale percorso
+`Scene`, che non li invoca. Le ombre any-hit dell'esperimento sono valide solo
+per i materiali >=32 di questo client. Dopo la compilazione, l'esempio
+`cargo run --locked --release -p ascii-material-room --example query_audit`
+esercita i tre JSON e le tre visuali; leggere il report per il protocollo.
+
 ## Compilazione e uso
 
 Dalla radice del repository `ascii-engine-lab`, anche in un checkout nuovo, con toolchain Rust e linker nativo installati:

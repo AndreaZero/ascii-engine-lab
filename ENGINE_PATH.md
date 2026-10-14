@@ -51,16 +51,28 @@ silhouette expansion, residual sample gaps and extra query cost: 8/9 eight-worke
 CPU-only runs exceed p95 16.7 ms. Center remains the default. R11's earlier 4/9
 failures are retained; the general geometry/motion/cost gate is not closed.
 
-Next: compare a bounded query-cost/acceleration change on the preserved R11/R12
-scenes and paths, with hit/tie semantics, history, output and density held fixed.
-Only measured evidence should choose the traversal structure; then address its
-dynamic occupancy lifetime. Do not substitute another material showcase, hide
-coverage loss through reduced density or promise realtime performance. No new
-writer is assigned automatically by this document.
+[R13](QUERY_ACCELERATION.md) performs the bounded query-work/cost comparison on
+those preserved scenes and paths. A reusable distance-limited box solver can
+skip remaining slab axes, and experimental client-specific shadow queries can
+stop early. Paired CPU cost regressed despite fewer axes, so the integration
+was rejected and the ordinary client retains R12 traversal. Explicit bounded
+diagnostics and the core helper remain available; no runtime speedup is claimed.
+Cache/deferred-Hit candidates were also rejected. Primary traversal
+remains linear. Numerical counterexamples
+prevent treating an ideal geometric AABB as an automatically equivalent filter
+for the existing f32 primitive solvers. A spatial hierarchy remains future work
+requiring explicit numerical semantics and evidence, not a capability delivered
+by these changes. The first unsuccessful pilot and host contention are retained.
+
+Next bounded capability: dynamic occupancy lifetime in client-owned immutable
+snapshots, with stable identities and consistent primary/shadow/reflection state.
+Continue reporting cost at fixed density; do not substitute another material
+showcase, hide coverage loss or promise realtime performance. No new writer is
+assigned automatically by this document.
 
 | Gate | Engineering work | Evidence needed to close it |
 | --- | --- | --- |
-| Geometry coverage and motion | R12 opt-in primary sampling verified in a bounded scene; cost, sample gaps and foreground dilation remain; next compare query traversal | Preserve R11/R12 scene/path and tie semantics, dense-reference coverage, three-view motion and CPU/window pacing without hidden quality reductions |
+| Geometry coverage and motion | R12 opt-in primary sampling and R13 exact bounded-helper experiment verified; runtime integration rejected for cost, linear traversal retained, sample gaps and foreground dilation remain | Preserve R11/R12 scene/path and tie semantics, dense-reference coverage, three-view motion and CPU/window pacing without hidden quality reductions |
 | Dynamic scene updates | A moving/opening/removable object changes real occupancy and identity | Primary visibility, shadows and reflections agree at the same tick; additions/removals leave no stale glyph history |
 | Practical creation and portability | Preview/reload/save for the supported content subset; useful controls rather than a full editor | A new scene can be created and reopened without core edits; documented package and execution on another physical machine |
 | V1 for a declared BLACKWATER subset | Fix supported scenes, actors, effects, distances, quality and hardware budget | A client supplies its state through documented APIs and the complete agreed workload passes; gameplay integration needs its own authorized task |

@@ -1,8 +1,8 @@
-//! Independent traversal acceptance against the exact linear R12 producer.
+//! Default runtime and explicit bounded experiment against the frozen R12 producer.
 //! Core primitive arithmetic is deliberately unchanged in R13: this oracle
 //! freezes selection, transforms and hooks, not a new intersection definition.
 //! In particular, legacy floating-point hits outside ideal bounds must survive.
-use ascii_material_room::{coverage_study::coverage_camera, SceneDocument};
+use ascii_material_room::{coverage_study::coverage_camera, SceneDocument, Snapshot};
 pub use ascii_material_room::{DEFAULT_SCENE_JSON, DEFAULT_SCENE_V2_JSON};
 use ascii_render::{
     camera::Mode,
@@ -97,14 +97,21 @@ fn vector_bits(v: Vec3) -> [u32; 3] {
     v.to_array().map(f32::to_bits)
 }
 
-fn compare_ray(actual: &impl Scene, reference: &impl Scene, ray: Ray, time: f32) {
+fn compare_ray(actual: &Snapshot, reference: &impl Scene, ray: Ray, time: f32) {
+    let expected = hit_bits(reference.trace(ray, time, Stage::Light, true));
+    let runtime = hit_bits(actual.trace(ray, time, Stage::Light, true));
+    assert_eq!(runtime, expected, "default runtime ray={ray:?} time={time}");
     assert_eq!(
-        hit_bits(actual.trace(ray, time, Stage::Light, true)),
-        hit_bits(reference.trace(ray, time, Stage::Light, true)),
-        "ray={ray:?} time={time}"
+        hit_bits(
+            actual
+                .trace_bounded_counted(ray, time, Stage::Light, true)
+                .0
+        ),
+        expected,
+        "bounded experiment ray={ray:?} time={time}"
     );
 }
-fn compare_occlusion(actual: &impl Scene, reference: &impl Scene, ray: Ray, time: f32) {
+fn compare_occlusion(actual: &Snapshot, reference: &impl Scene, ray: Ray, time: f32) {
     let hit = reference.trace(ray, time, Stage::Light, false);
     let mut limits = vec![
         f32::NEG_INFINITY,
@@ -133,7 +140,14 @@ fn compare_occlusion(actual: &impl Scene, reference: &impl Scene, ray: Ray, time
         assert_eq!(
             actual.occluded(ray, time, Stage::Light, limit),
             expected,
-            "ray={ray:?} time={time} limit={limit}"
+            "default runtime ray={ray:?} time={time} limit={limit}"
+        );
+        assert_eq!(
+            actual
+                .occluded_bounded_counted(ray, time, Stage::Light, limit)
+                .0,
+            expected,
+            "bounded experiment ray={ray:?} time={time} limit={limit}"
         );
     }
 }
@@ -374,9 +388,18 @@ fn exact_ties_preserve_v1_author_order_and_v2_id_priority_across_many_objects() 
             );
             for stage in [Stage::Core, Stage::Light, Stage::Water, Stage::Cloth] {
                 for include_water in [false, true] {
+                    let expected = hit_bits(reference.trace(ray, 0., stage, include_water));
                     assert_eq!(
                         hit_bits(actual.trace(ray, 0., stage, include_water)),
-                        hit_bits(reference.trace(ray, 0., stage, include_water))
+                        expected
+                    );
+                    assert_eq!(
+                        hit_bits(
+                            actual
+                                .trace_bounded_counted(ray, 0., stage, include_water)
+                                .0
+                        ),
+                        expected
                     );
                 }
             }
@@ -466,6 +489,18 @@ fn data_extremes_and_motion_fallback_rebuild_without_changing_old_snapshots() {
                         );
                         assert_eq!(
                             hit_bits(retained.trace(ray, 0., Stage::Light, true)),
+                            hit_bits(reference.trace(ray, 0., Stage::Light, true))
+                        );
+                        assert_eq!(
+                            hit_bits(fresh.trace_bounded_counted(ray, time, Stage::Light, true).0),
+                            hit_bits(frozen_fresh.trace(ray, time, Stage::Light, true))
+                        );
+                        assert_eq!(
+                            hit_bits(
+                                retained
+                                    .trace_bounded_counted(ray, 0., Stage::Light, true)
+                                    .0
+                            ),
                             hit_bits(reference.trace(ray, 0., Stage::Light, true))
                         );
                     }
@@ -601,7 +636,9 @@ fn consecutive_rotation_groups_preserve_queries_after_misses_and_motion() {
 }
 
 #[test]
-fn composed_cells_history_and_all_counters_match_r12_in_both_sampling_modes() {
+fn default_runtime_cells_history_and_frame_counters_match_r12_in_both_sampling_modes() {
+    // The separate query_audit example composes the bounded experiment wrapper
+    // against this ordinary runtime at the detail grid across all three views.
     for source in SOURCES {
         let pair = Pair::text(source);
         for mode in MODES {

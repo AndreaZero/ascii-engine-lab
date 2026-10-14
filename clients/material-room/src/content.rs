@@ -7,8 +7,9 @@
 use ascii_render::{
     camera::{Camera, CameraView, Mode},
     core::{
-        intersect_box_before, intersect_box_before_counted, intersect_ellipsoid, EnvironmentQuery,
-        EnvironmentSample, Hit, MaterialSample, MetallicSample, Ray, Scene, Stage,
+        intersect_box, intersect_box_before, intersect_box_before_counted, intersect_ellipsoid,
+        EnvironmentQuery, EnvironmentSample, Hit, MaterialSample, MetallicSample, Ray, Scene,
+        Stage,
     },
 };
 use glam::{Quat, Vec3};
@@ -513,8 +514,38 @@ struct PreparedObject {
 }
 
 impl PreparedObject {
+    fn trace(&self, ray: Ray) -> Option<Hit> {
+        let inverse = self.rotation.conjugate();
+        let local_ray = Ray {
+            origin: inverse * (ray.origin - self.position),
+            dir: inverse * ray.dir,
+        };
+        let (distance, normal) = match self.shape {
+            Shape::Box => intersect_box(local_ray, -self.half_extents, self.half_extents),
+            Shape::Ellipsoid => intersect_ellipsoid(local_ray, Vec3::ZERO, self.half_extents),
+        }?;
+        let local = local_ray.origin + local_ray.dir * distance;
+        let position = ray.origin + ray.dir * distance;
+        let normal = (self.rotation * normal).normalize();
+        if !distance.is_finite()
+            || !position.is_finite()
+            || !local.is_finite()
+            || !normal.is_finite()
+        {
+            return None;
+        }
+        Some(Hit {
+            distance,
+            position,
+            normal,
+            material: self.material,
+            object_id: self.id,
+            local,
+        })
+    }
+
     #[inline]
-    fn trace<const COUNT: bool>(
+    fn trace_bounded<const COUNT: bool>(
         &self,
         ray: Ray,
         max_distance: f32,
@@ -588,8 +619,9 @@ impl PreparedObject {
     }
 }
 
-/// Work performed by one diagnostic query, outside frame timing. Ordinary
-/// `Scene` queries compile out these increments and use no atomic counters.
+/// Work performed by the explicit bounded-query experiment, outside frame
+/// timing. These counters do not describe ordinary `Scene` queries, which
+/// retain the original R12 nearest-hit and default occlusion paths.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QueryStats {
     /// Objects reached in authored query order, before testing their primitive.
@@ -653,60 +685,17 @@ impl Snapshot {
         }
     }
 
-    /// Untimed counterpart of `Scene::trace`, with actual query-work counts.
-    /// Stage and water flags do not change this client's authored objects.
-    pub fn trace_counted(
-        &self,
-        ray: Ray,
-        time: f32,
-        _stage: Stage,
-        _include_water: bool,
-    ) -> (Option<Hit>, QueryStats) {
-        let mut stats = QueryStats::default();
-        let hit = self.trace_query::<true>(ray, time, &mut stats);
-        (hit, stats)
-    }
-
-    /// Untimed counterpart of `Scene::occluded`. Every returned blocker has
-    /// passed the same full Hit validation as a nearest-hit query.
-    pub fn occluded_counted(
-        &self,
-        ray: Ray,
-        time: f32,
-        _stage: Stage,
-        max_distance: f32,
-    ) -> (bool, QueryStats) {
-        let mut stats = QueryStats::default();
-        let blocked = self.occluded_query::<true>(ray, time, max_distance, &mut stats);
-        (blocked, stats)
-    }
-
-    fn trace_query<const COUNT: bool>(
-        &self,
-        ray: Ray,
-        time: f32,
-        stats: &mut QueryStats,
-    ) -> Option<Hit> {
-        if time.to_bits() == self.time.to_bits() {
-            self.trace_prepared::<COUNT>(ray, stats)
-        } else {
-            Self::new(self.data.clone(), time).trace_prepared::<COUNT>(ray, stats)
-        }
-    }
-
-    fn trace_prepared<const COUNT: bool>(&self, ray: Ray, stats: &mut QueryStats) -> Option<Hit> {
-        if !valid_ray(ray) {
+    fn trace_prepared(&self, ray: Ray) -> Option<Hit> {
+        if !ray.origin.is_finite()
+            || !ray.dir.is_finite()
+            || !ray.dir.length_squared().is_finite()
+            || ray.dir.length_squared() <= 0.0
+        {
             return None;
         }
         let mut nearest: Option<Hit> = None;
         for object in &self.objects {
-            if COUNT {
-                stats.objects_considered += 1;
-                stats.primitive_tests += 1;
-            }
-            // Only a previously validated Hit may narrow the distance bound.
-            let limit = nearest.as_ref().map_or(f32::INFINITY, |hit| hit.distance);
-            if let Some(hit) = object.trace::<COUNT>(ray, limit, stats) {
+            if let Some(hit) = object.trace(ray) {
                 if nearest
                     .as_ref()
                     .is_none_or(|old| hit.distance < old.distance)
@@ -718,7 +707,78 @@ impl Snapshot {
         nearest
     }
 
-    fn occluded_query<const COUNT: bool>(
+    /// Explicit untimed bounded nearest-hit experiment, separate from the
+    /// ordinary `Scene::trace` path. Counts describe only this experiment.
+    /// Stage and water flags do not change this client's authored objects.
+    pub fn trace_bounded_counted(
+        &self,
+        ray: Ray,
+        time: f32,
+        _stage: Stage,
+        _include_water: bool,
+    ) -> (Option<Hit>, QueryStats) {
+        let mut stats = QueryStats::default();
+        let hit = self.trace_bounded_query::<true>(ray, time, &mut stats);
+        (hit, stats)
+    }
+
+    /// Explicit untimed bounded any-hit experiment, separate from the default
+    /// `Scene::occluded` path. Every blocker passes full Hit validation; counts
+    /// describe only this experiment, including its early shadow returns.
+    pub fn occluded_bounded_counted(
+        &self,
+        ray: Ray,
+        time: f32,
+        _stage: Stage,
+        max_distance: f32,
+    ) -> (bool, QueryStats) {
+        let mut stats = QueryStats::default();
+        let blocked = self.occluded_bounded_query::<true>(ray, time, max_distance, &mut stats);
+        (blocked, stats)
+    }
+
+    fn trace_bounded_query<const COUNT: bool>(
+        &self,
+        ray: Ray,
+        time: f32,
+        stats: &mut QueryStats,
+    ) -> Option<Hit> {
+        if time.to_bits() == self.time.to_bits() {
+            self.trace_bounded_prepared::<COUNT>(ray, stats)
+        } else {
+            Self::new(self.data.clone(), time).trace_bounded_prepared::<COUNT>(ray, stats)
+        }
+    }
+
+    fn trace_bounded_prepared<const COUNT: bool>(
+        &self,
+        ray: Ray,
+        stats: &mut QueryStats,
+    ) -> Option<Hit> {
+        if !valid_ray(ray) {
+            return None;
+        }
+        let mut nearest: Option<Hit> = None;
+        for object in &self.objects {
+            if COUNT {
+                stats.objects_considered += 1;
+                stats.primitive_tests += 1;
+            }
+            // Only a previously validated Hit may narrow the distance bound.
+            let limit = nearest.as_ref().map_or(f32::INFINITY, |hit| hit.distance);
+            if let Some(hit) = object.trace_bounded::<COUNT>(ray, limit, stats) {
+                if nearest
+                    .as_ref()
+                    .is_none_or(|old| hit.distance < old.distance)
+                {
+                    nearest = Some(hit);
+                }
+            }
+        }
+        nearest
+    }
+
+    fn occluded_bounded_query<const COUNT: bool>(
         &self,
         ray: Ray,
         time: f32,
@@ -726,13 +786,17 @@ impl Snapshot {
         stats: &mut QueryStats,
     ) -> bool {
         if time.to_bits() == self.time.to_bits() {
-            self.occluded_prepared::<COUNT>(ray, max_distance, stats)
+            self.occluded_bounded_prepared::<COUNT>(ray, max_distance, stats)
         } else {
-            Self::new(self.data.clone(), time).occluded_prepared::<COUNT>(ray, max_distance, stats)
+            Self::new(self.data.clone(), time).occluded_bounded_prepared::<COUNT>(
+                ray,
+                max_distance,
+                stats,
+            )
         }
     }
 
-    fn occluded_prepared<const COUNT: bool>(
+    fn occluded_bounded_prepared<const COUNT: bool>(
         &self,
         ray: Ray,
         max_distance: f32,
@@ -749,7 +813,7 @@ impl Snapshot {
                 stats.objects_considered += 1;
                 stats.primitive_tests += 1;
             }
-            if let Some(hit) = object.trace::<COUNT>(ray, max_distance, stats) {
+            if let Some(hit) = object.trace_bounded::<COUNT>(ray, max_distance, stats) {
                 if hit.distance < max_distance {
                     if COUNT {
                         stats.shadow_early_exits += 1;
@@ -771,10 +835,11 @@ fn valid_ray(ray: Ray) -> bool {
 
 impl Scene for Snapshot {
     fn trace(&self, ray: Ray, time: f32, _stage: Stage, _include_water: bool) -> Option<Hit> {
-        self.trace_query::<false>(ray, time, &mut QueryStats::default())
-    }
-    fn occluded(&self, ray: Ray, time: f32, _stage: Stage, max_distance: f32) -> bool {
-        self.occluded_query::<false>(ray, time, max_distance, &mut QueryStats::default())
+        if time.to_bits() == self.time.to_bits() {
+            self.trace_prepared(ray)
+        } else {
+            Self::new(self.data.clone(), time).trace_prepared(ray)
+        }
     }
     fn light_position(&self, time: f32) -> Vec3 {
         assert!(time.is_finite(), "material-room query time must be finite");
@@ -1245,7 +1310,7 @@ mod tests {
             dir: -Vec3::X,
         };
         for time in [0.0, 2.0] {
-            let (hit, stats) = snapshot.trace_counted(ray, time, Stage::Light, true);
+            let (hit, stats) = snapshot.trace_bounded_counted(ray, time, Stage::Light, true);
             assert_eq!(
                 bits(hit),
                 bits(snapshot.trace(ray, time, Stage::Light, true))
@@ -1265,7 +1330,7 @@ mod tests {
                     shadow_early_exits: 0,
                 }
             );
-            let (blocked, stats) = snapshot.occluded_counted(ray, time, Stage::Light, 3.0);
+            let (blocked, stats) = snapshot.occluded_bounded_counted(ray, time, Stage::Light, 3.0);
             assert!(blocked);
             assert_eq!(blocked, snapshot.occluded(ray, time, Stage::Light, 3.0));
             assert_eq!(
@@ -1283,7 +1348,8 @@ mod tests {
                 }
             );
             for limit in [hit.unwrap().distance, 0.0, f32::NEG_INFINITY, f32::NAN] {
-                let (blocked, stats) = snapshot.occluded_counted(ray, time, Stage::Light, limit);
+                let (blocked, stats) =
+                    snapshot.occluded_bounded_counted(ray, time, Stage::Light, limit);
                 assert!(!blocked);
                 assert_eq!(blocked, snapshot.occluded(ray, time, Stage::Light, limit));
                 assert_eq!(stats.primitive_tests, 3);
@@ -1319,10 +1385,11 @@ mod tests {
                 dir: Vec3::splat(f32::MAX),
             },
         ] {
-            let (hit, stats) = snapshot.trace_counted(ray, 0.0, Stage::Core, false);
+            let (hit, stats) = snapshot.trace_bounded_counted(ray, 0.0, Stage::Core, false);
             assert!(hit.is_none());
             assert_eq!(stats, QueryStats::default());
-            let (blocked, stats) = snapshot.occluded_counted(ray, 0.0, Stage::Core, f32::INFINITY);
+            let (blocked, stats) =
+                snapshot.occluded_bounded_counted(ray, 0.0, Stage::Core, f32::INFINITY);
             assert!(!blocked);
             assert_eq!(stats, QueryStats::default());
         }
@@ -1337,7 +1404,7 @@ mod tests {
             origin: Vec3::new(0.0, 1.0, 3.0),
             dir: -Vec3::Z,
         };
-        let (hit, stats) = snapshot.trace_counted(ray, 0.0, Stage::Light, true);
+        let (hit, stats) = snapshot.trace_bounded_counted(ray, 0.0, Stage::Light, true);
         assert!(hit.is_some());
         assert_eq!(stats.primitive_tests, 1);
         assert_eq!(stats.direction_transforms, 1);
@@ -1346,7 +1413,7 @@ mod tests {
         assert_eq!(stats.box_axes_examined, 0);
         assert_eq!(stats.box_axes_unbounded_visited, 0);
         for limit in [0.0, hit.unwrap().distance, f32::NAN, f32::INFINITY] {
-            let (blocked, stats) = snapshot.occluded_counted(ray, 0.0, Stage::Light, limit);
+            let (blocked, stats) = snapshot.occluded_bounded_counted(ray, 0.0, Stage::Light, limit);
             assert_eq!(blocked, hit.unwrap().distance < limit);
             assert_eq!(stats.primitive_hits, 1);
             assert_eq!(stats.full_hit_builds, 1);
@@ -1378,17 +1445,18 @@ mod tests {
             dir: -Vec3::Z,
         };
         let expected = isolated.trace(ray, 0.0, Stage::Light, true).unwrap();
-        let (hit, stats) = snapshot.trace_counted(ray, 0.0, Stage::Light, true);
+        let (hit, stats) = snapshot.trace_bounded_counted(ray, 0.0, Stage::Light, true);
         assert_eq!(bits(hit), bits(Some(expected)));
         assert_eq!(expected.object_id, 4);
         assert_eq!(stats.primitive_tests, 5);
         assert_eq!(stats.direction_transforms, 5);
         assert_eq!(stats.primitive_hits, 1);
-        let (blocked, stats) = snapshot.occluded_counted(ray, 0.0, Stage::Light, 4.0);
+        let (blocked, stats) = snapshot.occluded_bounded_counted(ray, 0.0, Stage::Light, 4.0);
         assert!(blocked);
         assert_eq!(stats.primitive_tests, 4);
         assert_eq!(stats.direction_transforms, 4);
-        let (blocked, stats) = snapshot.occluded_counted(ray, 0.0, Stage::Light, expected.distance);
+        let (blocked, stats) =
+            snapshot.occluded_bounded_counted(ray, 0.0, Stage::Light, expected.distance);
         assert!(!blocked);
         assert_eq!(stats.primitive_tests, 5);
         assert_eq!(stats.direction_transforms, 5);
@@ -1397,7 +1465,7 @@ mod tests {
             dir: -Vec3::X,
             ..ray
         };
-        let (hit, stats) = snapshot.trace_counted(other, 0.0, Stage::Light, true);
+        let (hit, stats) = snapshot.trace_bounded_counted(other, 0.0, Stage::Light, true);
         assert!(hit.is_none());
         assert_eq!(stats.direction_transforms, 5);
     }
@@ -1424,19 +1492,20 @@ mod tests {
         };
         assert_eq!(
             initial
-                .trace_counted(ray, 0.0, Stage::Light, true)
+                .trace_bounded_counted(ray, 0.0, Stage::Light, true)
                 .1
                 .direction_transforms,
             3
         );
-        let (direct, direct_stats) = moved.trace_counted(ray, time, Stage::Light, true);
-        let (fallback, fallback_stats) = initial.trace_counted(ray, time, Stage::Light, true);
+        let (direct, direct_stats) = moved.trace_bounded_counted(ray, time, Stage::Light, true);
+        let (fallback, fallback_stats) =
+            initial.trace_bounded_counted(ray, time, Stage::Light, true);
         assert_eq!(direct_stats.direction_transforms, 3);
         assert_eq!(direct_stats, fallback_stats);
         assert_eq!(bits(direct), bits(fallback));
         assert_eq!(
             initial
-                .trace_counted(ray, 0.0, Stage::Light, true)
+                .trace_bounded_counted(ray, 0.0, Stage::Light, true)
                 .1
                 .direction_transforms,
             3
@@ -1464,7 +1533,7 @@ mod tests {
             origin: Vec3::new(0.0, 1.0, 3.0),
             dir: -Vec3::Z,
         };
-        let (hit, stats) = snapshot.trace_counted(ray, 0.0, Stage::Light, true);
+        let (hit, stats) = snapshot.trace_bounded_counted(ray, 0.0, Stage::Light, true);
         assert_eq!(
             bits(hit),
             bits(isolated.trace(ray, 0.0, Stage::Light, true))

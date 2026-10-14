@@ -1,4 +1,4 @@
-"""R13 serialized comparisons against the preserved, unmodified R12 executable.
+"""R13 bounded experiment and final default checks against preserved R12.
 
 Build first. Never overlap these phases with a build, audit or encoder.
 Raw logs and captures stay local under evidence/r13; no quality auto-scaling.
@@ -20,7 +20,9 @@ SCENES = {name: ROOT / "clients/material-room/assets" / file for name, file in (
     ("v1", "material-room.json"), ("v2", "material-room-v2.json"),
     ("coverage", "coverage-room-v2.json"))}
 EXE = "ascii-material-room" + (".exe" if os.name == "nt" else "")
-BINARIES = {"r12": OUT / "baseline" / EXE, "r13": ROOT / "target/release" / EXE}
+CANDIDATE_COMMIT = "16a17cd9df6d2deb209a1cdd4be5555db0f25bab"
+BINARIES = {"r12": OUT / "baseline" / EXE, "r13": OUT / "candidate" / EXE,
+    "default": ROOT / "target/release" / EXE}
 
 
 def digest(path):
@@ -57,14 +59,32 @@ def compare(left, right):
     return len(a)
 
 
+def validate_capture_metadata(phase, name):
+    motion = name.startswith("motion-")
+    if motion:
+        scene, sampling, backend = "coverage", name.removeprefix("motion-"), "vulkan"
+    else:
+        scene, sampling, backend = name.split("-")
+    doc = json.loads((OUT/phase/name/"run.json").read_text(encoding="utf-8"))
+    assert not doc["cpu_only"] and doc["grid"] == [240, 135] and doc["output"] == [1920, 1080]
+    assert doc["workers"] == 8 and doc["camera_path"] == "coverage" and doc["stage"] == "light"
+    assert doc["primary_sampling"] == sampling and doc["time_start"] == 0
+    assert doc["simulation_ticks_per_second"] == 30 and doc["camera_orbit_speed"] == 0
+    assert doc["input_scene"] == json.loads(SCENES[scene].read_text(encoding="utf-8"))
+    assert doc["gpu"]["adapter"]["backend"] == {"vulkan": "Vulkan", "dx12": "Dx12"}[backend]
+    assert sorted(r["camera"] for r in doc["runs"]) == sorted(MODES)
+    assert all(r["frame_count"] == (180 if motion else 3) and r["static_changed_cells"] == 0
+        for r in doc["runs"])
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", required=True, choices=["baseline", "runtime", "pilot", "measure", "windows", "cost-summary", "summary"])
+    parser.add_argument("--phase", required=True, choices=["baseline", "runtime", "default-runtime", "pilot", "measure", "windows", "default-windows", "cost-summary", "summary"])
     phase = parser.parse_args().phase
     OUT.mkdir(parents=True, exist_ok=True)
     records = []
-    if phase in ("baseline", "runtime"):
-        rev = "r12" if phase == "baseline" else "r13"
+    if phase in ("baseline", "runtime", "default-runtime"):
+        rev = {"baseline": "r12", "runtime": "r13", "default-runtime": "default"}[phase]
         for scene in SCENES:
             for sampling in SAMPLING:
                 for backend in ("vulkan", "dx12"):
@@ -94,11 +114,11 @@ def main():
                             name = f"r{repeat}-{scene}-{sampling}-w{workers}-{rev}"
                             run(phase, name, rev, room(scene, OUT/phase/name, workers=workers)
                                 + ["--cpu-only", "--sampling", sampling, "--camera-path", "coverage"], records)
-    elif phase == "windows":
+    elif phase in ("windows", "default-windows"):
         for mode in MODES:
             for sampling in SAMPLING:
                 name = f"{mode}-{sampling}"
-                run(phase, name, "r13", ["--scene", SCENES["coverage"], "--camera", mode,
+                run(phase, name, "r13" if phase == "windows" else "default", ["--scene", SCENES["coverage"], "--camera", mode,
                     "--sampling", sampling, "--camera-path", "coverage", "--seconds", 6,
                     "--workers", 8, "--profile", "detail", "--backend", "vulkan",
                     "--output", OUT/phase/name], records)
@@ -117,6 +137,9 @@ def main():
         expected_captures = {f"{s}-{q}-{b}": 6 for s in SCENES
             for q in SAMPLING for b in ("vulkan", "dx12")}
         expected_captures.update({f"motion-{q}": 540 for q in SAMPLING})
+        for capture_phase in ("baseline", "runtime"):
+            for name in expected_captures:
+                validate_capture_metadata(capture_phase, name)
         parity = {name: compare(OUT/"baseline"/name, OUT/"runtime"/name)
             for name in expected_captures}
         assert parity == expected_captures
@@ -155,33 +178,48 @@ def main():
                                 [round(statistics.median(m["cpu_ms"]["p50"] for m in rows if m["camera"] == c), 3) for c in MODES],
                                 "p95_exceed", sum(m["cpu_ms"]["p95"] > 16.7 for m in rows))
             return
-        windows = []
-        window_runs = json.loads((OUT/"runs-windows.json").read_text(encoding="utf-8"))
-        assert len(window_runs) == 6
-        assert {r["case"] for r in window_runs} == {f"{c}-{q}" for c in MODES for q in SAMPLING}
-        assert all(r["exit_code"] == 0 and r["executable_sha256"] == digest(BINARIES["r13"])
-            for r in window_runs)
-        for name in (f"{c}-{q}" for c in MODES for q in SAMPLING):
-            path = OUT/"windows"/name/"window-run.json"
-            doc = json.loads(path.read_text(encoding="utf-8"))
-            assert doc["frames"] > 12 and doc["configuration_changes"] == 0
-            assert doc["actual_output"] == [1920, 1080]
-            assert doc["requested_output"] == [1920, 1080]
-            assert doc["workers"] == 8 and doc["grid"] == [240, 135]
-            assert doc["camera_path"] == "coverage" and doc["warmup_frames_excluded"] == 12
-            assert doc["input_scene"] == json.loads(SCENES["coverage"].read_text(encoding="utf-8"))
-            assert doc["gpu"]["adapter"]["backend"] == "Vulkan" and doc["wall_seconds"] >= 6
-            assert f'{doc["camera"]}-{doc["primary_sampling"]}' == name
-            windows.append(doc)
-        assert len(windows) == 6
+        window_sets = {}
+        for window_phase, revision in (("windows", "r13"), ("default-windows", "default")):
+            windows = []
+            window_runs = json.loads((OUT/f"runs-{window_phase}.json").read_text(encoding="utf-8"))
+            assert len(window_runs) == 6
+            assert {r["case"] for r in window_runs} == {f"{c}-{q}" for c in MODES for q in SAMPLING}
+            assert all(r["exit_code"] == 0 and r["executable_sha256"] == digest(BINARIES[revision])
+                for r in window_runs)
+            for name in (f"{c}-{q}" for c in MODES for q in SAMPLING):
+                path = OUT/window_phase/name/"window-run.json"
+                doc = json.loads(path.read_text(encoding="utf-8"))
+                assert doc["frames"] > 12 and doc["configuration_changes"] == 0
+                assert doc["actual_output"] == [1920, 1080]
+                assert doc["requested_output"] == [1920, 1080]
+                assert doc["workers"] == 8 and doc["grid"] == [240, 135]
+                assert doc["camera_path"] == "coverage" and doc["warmup_frames_excluded"] == 12
+                assert doc["input_scene"] == json.loads(SCENES["coverage"].read_text(encoding="utf-8"))
+                assert doc["gpu"]["adapter"]["backend"] == "Vulkan" and doc["wall_seconds"] >= 6
+                assert f'{doc["camera"]}-{doc["primary_sampling"]}' == name
+                windows.append(doc)
+            window_sets[window_phase] = windows
+        default_runs = json.loads((OUT/"runs-default-runtime.json").read_text(encoding="utf-8"))
+        assert len(default_runs) == 14 and {r["case"] for r in default_runs} == set(expected_captures)
+        assert all(r["exit_code"] == 0 and r["executable_sha256"] == digest(BINARIES["default"])
+            for r in default_runs)
+        for name in expected_captures:
+            validate_capture_metadata("default-runtime", name)
+        default_parity = {name: compare(OUT/"baseline"/name, OUT/"default-runtime"/name)
+            for name in expected_captures}
+        assert default_parity == expected_captures
         summary = {"baseline_png_equal": parity, "backend_png_equal": backend,
-            "measurements": measurements, "windows": windows,
+            "default_png_equal": default_parity,
+            "measurements": measurements, "windows": window_sets["windows"],
+            "default_windows": window_sets["default-windows"],
+            "candidate_source_commit": CANDIDATE_COMMIT,
+            "binary_sha256": {name: digest(path) for name, path in BINARIES.items()},
             "scene_sha256": {s: digest(p) for s, p in SCENES.items()},
             "limits": ["Single host, not isolated; CPU-only is not FPS",
                 "Window callback intervals and submission waits are not GPU timestamps",
                 "Finite corpus and sampled visual inspection do not prove universal equivalence"]}
         (OUT/"summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-        print(json.dumps({k:v for k,v in summary.items() if k not in ("measurements", "windows")}, indent=2))
+        print(json.dumps({k:v for k,v in summary.items() if k not in ("measurements", "windows", "default_windows")}, indent=2))
         for scene in ("v2", "coverage"):
             for sampling in SAMPLING:
                 for workers in (1, 8):

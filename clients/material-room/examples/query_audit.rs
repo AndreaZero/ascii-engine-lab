@@ -1,5 +1,6 @@
-//! Untimed R13 producer-work audit. Instrumentation never supplies timing data.
-//! Every counted composition is compared bit-for-bit with the plain producer.
+//! Untimed R13 bounded-experiment audit, not ordinary-runtime operation counts.
+//! Every experiment composition is compared bit-for-bit with the restored R12
+//! runtime. Instrumentation never supplies timing data or enables runtime use.
 use ascii_material_room::{
     content::QueryStats, coverage_study::coverage_camera, SceneDocument, Snapshot,
     DEFAULT_SCENE_JSON, DEFAULT_SCENE_V2_JSON,
@@ -47,7 +48,7 @@ impl Options {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--help" => {
-                    println!("query_audit [--output DIR] [--cols N] [--rows N] [--workers N] [--stress128]\nUntimed actual query work for three packaged scenes, three views, t=0/3/6, center/conservative9, fixed coverage camera path. Default: 240x135, one worker. Optional generated 128-object stress is written separately. No CPU/GPU timings are measured.");
+                    println!("query_audit [--output DIR] [--cols N] [--rows N] [--workers N] [--stress128]\nUntimed bounded-experiment query work, compared with the ordinary R12 linear runtime: three packaged scenes, three views, t=0/3/6, center/conservative9, fixed coverage camera path. Default: 240x135, one worker. Optional generated 128-object stress is written separately. These are not ordinary-runtime counts or CPU/GPU timings.");
                     std::process::exit(0);
                 }
                 "--stress128" => options.stress128 = true,
@@ -76,7 +77,7 @@ impl Options {
     }
 }
 
-// One counter set per externally requested query category. The producer's
+// One counter set per externally requested query category. The experiment's
 // internal traversal is reported by QueryStats, never counted as another call.
 #[derive(Default)]
 struct Counters {
@@ -208,13 +209,13 @@ impl Totals {
     }
 }
 
-struct Counted<'a> {
+struct BoundedExperiment<'a> {
     scene: &'a Snapshot,
     primary: Counters,
     secondary: Counters,
     shadow: Counters,
 }
-impl<'a> Counted<'a> {
+impl<'a> BoundedExperiment<'a> {
     fn new(scene: &'a Snapshot) -> Self {
         Self {
             scene,
@@ -234,9 +235,11 @@ impl<'a> Counted<'a> {
 
 // Forward every Scene hook: defaults would silently disable local materials,
 // environment/conductors or structural history and profile a different scene.
-impl Scene for Counted<'_> {
+impl Scene for BoundedExperiment<'_> {
     fn trace(&self, ray: Ray, time: f32, stage: Stage, include_water: bool) -> Option<Hit> {
-        let (hit, stats) = self.scene.trace_counted(ray, time, stage, include_water);
+        let (hit, stats) = self
+            .scene
+            .trace_bounded_counted(ray, time, stage, include_water);
         // This is the current Composer contract: true = primary visibility,
         // false = local environment/reflection visibility. Shadows use occluded.
         let category = if include_water {
@@ -248,7 +251,9 @@ impl Scene for Counted<'_> {
         hit
     }
     fn occluded(&self, ray: Ray, time: f32, stage: Stage, max_distance: f32) -> bool {
-        let (blocked, stats) = self.scene.occluded_counted(ray, time, stage, max_distance);
+        let (blocked, stats) = self
+            .scene
+            .occluded_bounded_counted(ray, time, stage, max_distance);
         self.shadow.record(stats, blocked);
         blocked
     }
@@ -319,7 +324,7 @@ fn audit(document: &SceneDocument, source_label: &str, options: &Options) -> Res
             for time in TIMES {
                 let snapshot = document.snapshot(time);
                 let camera = coverage_camera(document.camera(mode), time);
-                let counted = Counted::new(&snapshot);
+                let counted = BoundedExperiment::new(&snapshot);
                 let (cells, stats) = counted_composer.compose(
                     &counted,
                     camera,
@@ -343,7 +348,7 @@ fn audit(document: &SceneDocument, source_label: &str, options: &Options) -> Res
                     || !stats_equal(&stats, &plain_stats)
                 {
                     return Err(format!(
-                        "counting changed cells or frame stats: {source_label}, {}, {}, t={time}",
+                        "bounded experiment differs from runtime cells or frame stats: {source_label}, {}, {}, t={time}",
                         mode.name(),
                         sampling.name()
                     )
@@ -375,8 +380,8 @@ fn audit(document: &SceneDocument, source_label: &str, options: &Options) -> Res
                     "composer_primary_rays": stats.primary_rays,
                     "alternate_primary_cells": stats.alternate_primary,
                     "visible_cells": stats.visible,
-                    "wrapper_cells_bitwise_equal": true,
-                    "wrapper_frame_stats_bitwise_equal": true,
+                    "bounded_vs_runtime_cells_bitwise_equal": true,
+                    "bounded_vs_runtime_frame_stats_bitwise_equal": true,
                 }));
             }
             println!(
@@ -396,37 +401,41 @@ fn audit(document: &SceneDocument, source_label: &str, options: &Options) -> Res
 
 fn report(scenes: Vec<Value>, options: &Options, synthetic: bool) -> Value {
     json!({
-        "audit": "r13_actual_query_work", "synthetic_stress": synthetic,
+        "audit": "r13_bounded_experiment_query_work", "synthetic_stress": synthetic,
+        "measured_query_path": "bounded_experiment",
+        "comparison_query_path": "runtime_r12_linear",
+        "ordinary_runtime_counters": false,
         "grid": [options.cols, options.rows], "aspect": ASPECT,
         "workers": options.workers, "stage": "light", "times_s": TIMES,
         "path": "coverage_camera: fixed six-second combined motion",
-        "history": "Independent counted/plain histories retained across t=0,3,6; reset for each view/sampling/scene.",
+        "history": "Independent bounded-experiment/runtime histories retained across t=0,3,6; reset for each view/sampling/scene.",
         "scenes": scenes,
         "counter_definitions": {
-            "primary": "Composer trace(include_water=true).",
-            "secondary": "Composer trace(include_water=false): combined environment visibility and reflection queries.",
-            "shadow": "Composer occluded calls; internal producer work is not counted again as secondary trace.",
+            "primary": "Experiment wrapper trace(include_water=true).",
+            "secondary": "Experiment wrapper trace(include_water=false): combined environment visibility and reflection queries.",
+            "shadow": "Experiment wrapper occluded calls; internal experiment work is not counted again as secondary trace.",
             "successful_calls": "Returned Some for trace or true for occluded.",
-            "direction_transforms": "Actual inverse quaternion times world-ray direction operations. The current producer transforms the direction separately for every visited object.",
-            "direction_transforms_below_visited_primitive_count": "Actual primitive_tests minus direction_transforms, excluding unvisited objects. Zero for the current producer, which does not reuse directions.",
+            "direction_transforms": "Experiment inverse quaternion times world-ray direction operations, performed separately for every visited object.",
+            "direction_transforms_below_visited_primitive_count": "Experiment primitive_tests minus direction_transforms, excluding unvisited objects. Zero for this experiment, which does not reuse directions.",
             "box_axes_examined": "Actual slab axes examined by the bounded box solver, including parallel axes; not divisions or GPU work. Ellipsoids do not contribute.",
             "box_axes_unbounded_visited": "Untimed counterfactual: axes examined by the same box solver with a positive-infinite limit, for the same visited boxes and local rays only. Objects skipped after a shadow early exit are excluded.",
             "box_axes_saved_with_limit_on_visited_boxes": "box_axes_unbounded_visited minus box_axes_examined; isolates limit-driven slab savings on visited boxes. It is not the difference against all R12 shadow work.",
-            "primitive_hits": "Current primitive solver returned Some. Box results already obey the current strict nearest/shadow limit; these are not unbounded R12 candidate counts.",
+            "primitive_hits": "Experiment primitive solver returned Some. Box results already obey the experiment's strict nearest/shadow limit; these are not unbounded R12 candidate counts.",
             "full_hit_builds": "Actual complete Hit reconstruction attempts, including rejected nonfinite complete hits.",
             "valid_hits": "Complete reconstruction returned a finite accepted Hit, possibly more than one per nearest trace.",
-            "kernel_candidates_not_finalized": "Current primitive_hits minus full_hit_builds. Bookkeeping of returned candidates only, not avoided reconstructions relative to R12.",
+            "kernel_candidates_not_finalized": "Experiment primitive_hits minus full_hit_builds. Bookkeeping of returned candidates only, not avoided reconstructions relative to R12.",
             "derived_r12_full_scan_primitive_tests": "Counterfactual calls times object_count, derived from the R12 full-scan algorithm; not an instrumented measurement of the frozen R12 binary.",
             "derived_r12_full_scan_direction_transforms": "Counterfactual calls times object_count: R12 transformed each ray direction once per object. Derived, not measured from the frozen binary.",
-            "direction_transforms_below_derived_r12_full_scan": "Derived full-scan direction transforms minus actual direction transforms. The current producer has no direction reuse, so only shadow early exits avoid these operations.",
+            "direction_transforms_below_derived_r12_full_scan": "Derived full-scan direction transforms minus experiment direction transforms. The experiment has no direction reuse, so only shadow early exits avoid these operations.",
         },
         "limits": [
             "Untimed diagnostic compositions with atomic aggregation. These are operation counts, not CPU/GPU times, FPS or a performance benchmark.",
-            "No broadphase: primary/secondary traces still test every object. Shadows can terminate at the first fully validated blocker.",
+            "Counts describe only the explicit bounded diagnostic experiment. The ordinary Scene runtime retains R12 linear nearest traversal and default nearest-hit occlusion; these counts do not describe that runtime.",
+            "The experiment has no broadphase: primary/secondary traces still test every object. Its shadow queries can terminate at the first fully validated blocker.",
             "Bounded box queries preserve the original slab arithmetic and strict filtered result, but can skip remaining axes once an entry cannot beat the limit. Ellipsoid kernels are unchanged.",
-            "Objects retain their original query order and independent world-to-local transforms. The current candidate uses no direction reuse or deferred Hit reconstruction. Operation savings do not establish wall-clock gains.",
+            "Experiment objects retain their original query order and independent world-to-local transforms, with no direction reuse or deferred Hit reconstruction. Operation savings do not establish wall-clock gains or justify enabling this path in the ordinary runtime.",
             "Bounded box filtering and shadow early exits hide unbounded candidates; no R12 full-hit count can be inferred from these counters. The axes counterfactual covers only boxes actually visited, never an extrapolated full shadow scan.",
-            "Bitwise cells and FrameStats are compared against the current uninstrumented producer, including history. R12 compatibility requires the separate frozen-source/binary checks.",
+            "Bounded-experiment cells and FrameStats are compared bitwise against the restored ordinary R12 runtime, including history. The separate frozen-source tests also compare both query paths with R12.",
             "Three discrete ticks do not measure every intervening frame. Full scene JSON is retained so the inputs are reviewable.",
             "Optional stress128 is generated synthetic content, reported separately; it is not a representative scene, a timing scaling result or a visual quality claim."
         ],

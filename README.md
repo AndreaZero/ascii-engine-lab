@@ -27,6 +27,8 @@ R11 adds [validated alpha data](ALPHA_DATA.md) in Material Room: local surfaces,
 
 R12 adds [optional primary geometry coverage](GEOMETRY_COVERAGE.md): nine semantic samples can recover thin foreground missed by a cell-center ray. Center remains the default; silhouette expansion, remaining sample gaps and increased CPU cost are measured explicitly. `Avvia-copertura.cmd` opens the fixed comparison scene; `C` switches sampling and `P` toggles its camera path. This is a coverage/cost experiment, not an artistic showcase or a claim of complete antialiasing.
 
+R13 verifies an [exact distance-limited box helper](QUERY_ACCELERATION.md) and measures its integration in Material Room. The candidate reduces slab work but increases CPU cost, so ordinary client traversal remains R12. The helper and explicitly bounded diagnostics remain available; no runtime speedup or spatial hierarchy is claimed.
+
 [Quick start](#getting-started) · [How it renders](#rendering-approach) · [Captures and benchmarks](#captures-and-measurements) · [Contributing](#contributing) · [Report an issue](https://github.com/AndreaZero/ascii-engine-lab/issues)
 
 ## Rendering approach

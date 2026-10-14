@@ -1,5 +1,7 @@
 # R6 — renderer separato e secondo utilizzatore
 
+Aggiornamento R13: [costo delle query con limite di distanza](QUERY_ACCELERATION.md), con output e tie confrontati contro R12 congelata. Il core aggiunge un helper box esatto; il candidato client riduce assi ma peggiora il costo CPU, quindi il runtime ordinario conserva R12. La diagnostica bounded resta esplicita e separata dal default. JSON e asset invariati; nessuna gerarchia spaziale o accelerazione runtime dichiarata.
+
 Aggiornamento R12: [copertura geometrica](GEOMETRY_COVERAGE.md) verifica Conservative9 opzionale nel nucleo, consumato dal client indipendente con scena/percorso e audit propri. Center resta il default; costo, sagome dilatate e dettagli tra campioni sono limiti misurati. Il formato JSON v2 e il producer di intersezioni restano invariati.
 
 Aggiornamento R11: [alpha dai dati](ALPHA_DATA.md) verifica materiali locali, conduttori, ambiente e camere dal JSON v2, mantenendo compatibilità v1, ricarica atomica e guida da checkout pulito. I limiti del JSON qui sotto descrivono la consegna R6 storica; il contratto corrente è nella [guida del client](clients/material-room/README.md).
