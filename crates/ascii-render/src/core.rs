@@ -241,6 +241,114 @@ pub fn intersect_box(ray: Ray, min: Vec3, max: Vec3) -> Option<(f32, Vec3)> {
         None
     }
 }
+/// Exact strict-distance variant of [`intersect_box`]: returns the same bits as
+/// `intersect_box(ray, min, max).filter(|(distance, _)| *distance < max_distance)`.
+/// The limit is a ray parameter, not necessarily a world-space distance: the
+/// direction need not be normalized. The original parallel threshold, slab
+/// arithmetic and normal tie order are preserved, including ill-conditioned
+/// results. This is not an idealized geometric bounds test.
+///
+/// A positive entry parameter never decreases while examining the slabs, so an
+/// entry already at/after the strict limit cannot become an accepted result.
+/// Inside rays retain the original exit selection. NaN limits, and limits at
+/// or below the original positive-hit threshold, reject every possible hit.
+#[inline]
+pub fn intersect_box_before(
+    ray: Ray,
+    min: Vec3,
+    max: Vec3,
+    max_distance: f32,
+) -> Option<(f32, Vec3)> {
+    if max_distance == f32::INFINITY {
+        // With no finite bound, retain the original slab path without a
+        // redundant bound comparison at each axis. Its raw +Inf hits must
+        // still fail the public strict-distance contract.
+        intersect_box(ray, min, max).filter(|(distance, _)| *distance < max_distance)
+    } else {
+        intersect_box_before_impl::<false, true>(ray, min, max, max_distance).0
+    }
+}
+
+/// Untimed diagnostic counterpart of [`intersect_box_before`]. The second value
+/// counts slab axes examined, including parallel axes, in [0,3]. It does not
+/// count divisions or GPU work. The ordinary function compiles out increments.
+#[inline]
+pub fn intersect_box_before_counted(
+    ray: Ray,
+    min: Vec3,
+    max: Vec3,
+    max_distance: f32,
+) -> (Option<(f32, Vec3)>, u8) {
+    if max_distance == f32::INFINITY {
+        intersect_box_before_impl::<true, false>(ray, min, max, max_distance)
+    } else {
+        intersect_box_before_impl::<true, true>(ray, min, max, max_distance)
+    }
+}
+
+#[inline]
+fn intersect_box_before_impl<const COUNT: bool, const BOUNDED: bool>(
+    ray: Ray,
+    min: Vec3,
+    max: Vec3,
+    max_distance: f32,
+) -> (Option<(f32, Vec3)>, u8) {
+    if BOUNDED && (max_distance.is_nan() || max_distance <= 0.0001) {
+        return (None, 0);
+    }
+    let mut axes = 0;
+    let mut near = -f32::INFINITY;
+    let mut far = f32::INFINITY;
+    let mut near_normal = Vec3::ZERO;
+    let mut far_normal = Vec3::ZERO;
+    for a in 0..3 {
+        if COUNT {
+            axes += 1;
+        }
+        if ray.dir[a].abs() < 1e-8 {
+            if ray.origin[a] < min[a] || ray.origin[a] > max[a] {
+                return (None, axes);
+            }
+            continue;
+        }
+        let mut t0 = (min[a] - ray.origin[a]) / ray.dir[a];
+        let mut t1 = (max[a] - ray.origin[a]) / ray.dir[a];
+        let mut n0 = Vec3::ZERO;
+        n0[a] = -1.;
+        let mut n1 = Vec3::ZERO;
+        n1[a] = 1.;
+        if t0 > t1 {
+            std::mem::swap(&mut t0, &mut t1);
+            std::mem::swap(&mut n0, &mut n1);
+        }
+        if t0 > near {
+            near = t0;
+            near_normal = n0;
+        }
+        if t1 < far {
+            far = t1;
+            far_normal = n1;
+        }
+        if near > far {
+            return (None, axes);
+        }
+        // `near` only changes on a strict greater-than comparison. Once it is
+        // positive, no later axis can restore an entry below this strict limit;
+        // NaN slab parameters never decrease it. Do not prune the inside case.
+        if BOUNDED && near > 0.0001 && near >= max_distance {
+            return (None, axes);
+        }
+    }
+    let hit = if near > 0.0001 {
+        Some((near, near_normal))
+    } else if far > 0.0001 && far.is_finite() {
+        Some((far, far_normal))
+    } else {
+        None
+    };
+    (hit.filter(|(distance, _)| *distance < max_distance), axes)
+}
+
 pub fn intersect_ellipsoid(ray: Ray, center: Vec3, radii: Vec3) -> Option<(f32, Vec3)> {
     let o = (ray.origin - center) / radii;
     let d = ray.dir / radii;

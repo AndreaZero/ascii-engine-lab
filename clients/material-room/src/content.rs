@@ -7,8 +7,8 @@
 use ascii_render::{
     camera::{Camera, CameraView, Mode},
     core::{
-        intersect_box, intersect_ellipsoid, EnvironmentQuery, EnvironmentSample, Hit,
-        MaterialSample, MetallicSample, Ray, Scene, Stage,
+        intersect_box_before, intersect_box_before_counted, intersect_ellipsoid, EnvironmentQuery,
+        EnvironmentSample, Hit, MaterialSample, MetallicSample, Ray, Scene, Stage,
     },
 };
 use glam::{Quat, Vec3};
@@ -511,17 +511,59 @@ struct PreparedObject {
     half_extents: Vec3,
     rotation: Quat,
 }
+
 impl PreparedObject {
-    fn trace(&self, ray: Ray) -> Option<Hit> {
+    #[inline]
+    fn trace<const COUNT: bool>(
+        &self,
+        ray: Ray,
+        max_distance: f32,
+        stats: &mut QueryStats,
+    ) -> Option<Hit> {
         let inverse = self.rotation.conjugate();
         let local_ray = Ray {
             origin: inverse * (ray.origin - self.position),
             dir: inverse * ray.dir,
         };
+        if COUNT {
+            stats.direction_transforms += 1;
+        }
         let (distance, normal) = match self.shape {
-            Shape::Box => intersect_box(local_ray, -self.half_extents, self.half_extents),
+            Shape::Box => {
+                if COUNT {
+                    let (hit, axes) = intersect_box_before_counted(
+                        local_ray,
+                        -self.half_extents,
+                        self.half_extents,
+                        max_distance,
+                    );
+                    // Untimed reference work only: count the axes of the same
+                    // visited box without a distance bound, not unvisited
+                    // shadow objects after an early return.
+                    let (_, unbounded_axes) = intersect_box_before_counted(
+                        local_ray,
+                        -self.half_extents,
+                        self.half_extents,
+                        f32::INFINITY,
+                    );
+                    stats.box_axes_examined += usize::from(axes);
+                    stats.box_axes_unbounded_visited += usize::from(unbounded_axes);
+                    hit
+                } else {
+                    intersect_box_before(
+                        local_ray,
+                        -self.half_extents,
+                        self.half_extents,
+                        max_distance,
+                    )
+                }
+            }
             Shape::Ellipsoid => intersect_ellipsoid(local_ray, Vec3::ZERO, self.half_extents),
         }?;
+        if COUNT {
+            stats.primitive_hits += 1;
+            stats.full_hit_builds += 1;
+        }
         let local = local_ray.origin + local_ray.dir * distance;
         let position = ray.origin + ray.dir * distance;
         let normal = (self.rotation * normal).normalize();
@@ -532,6 +574,9 @@ impl PreparedObject {
         {
             return None;
         }
+        if COUNT {
+            stats.valid_hits += 1;
+        }
         Some(Hit {
             distance,
             position,
@@ -541,6 +586,35 @@ impl PreparedObject {
             local,
         })
     }
+}
+
+/// Work performed by one diagnostic query, outside frame timing. Ordinary
+/// `Scene` queries compile out these increments and use no atomic counters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct QueryStats {
+    /// Objects reached in authored query order, before testing their primitive.
+    pub objects_considered: usize,
+    /// Analytic primitive calls, excluding the counted-only unbounded replay.
+    /// There is no broadphase in this producer.
+    pub primitive_tests: usize,
+    /// Quaternion multiplications of this ray's direction, one per object.
+    pub direction_transforms: usize,
+    /// Slab axes examined by bounded box calls, including parallel axes.
+    pub box_axes_examined: usize,
+    /// Slab axes of those same visited boxes replayed with an infinite limit.
+    /// This reference replay exists only in counted queries, outside timing.
+    pub box_axes_unbounded_visited: usize,
+    /// Active solver results of `Some`, including nonfinite Hits rejected later.
+    /// Box results already satisfy the strict distance bound; ellipsoids use
+    /// the original unbounded solver. These are not R12's raw candidate counts.
+    pub primitive_hits: usize,
+    /// Attempts to reconstruct a complete Hit and validate its finite fields.
+    /// Every primitive result is reconstructed, so this equals primitive_hits.
+    pub full_hit_builds: usize,
+    /// Reconstructed Hits accepted by the finite-field checks.
+    pub valid_hits: usize,
+    /// One when an occlusion query returns at its first valid blocker, else zero.
+    pub shadow_early_exits: usize,
 }
 
 /// A client-owned immutable producer; all renderer queries share this pose.
@@ -579,17 +653,60 @@ impl Snapshot {
         }
     }
 
-    fn trace_prepared(&self, ray: Ray) -> Option<Hit> {
-        if !ray.origin.is_finite()
-            || !ray.dir.is_finite()
-            || !ray.dir.length_squared().is_finite()
-            || ray.dir.length_squared() <= 0.0
-        {
+    /// Untimed counterpart of `Scene::trace`, with actual query-work counts.
+    /// Stage and water flags do not change this client's authored objects.
+    pub fn trace_counted(
+        &self,
+        ray: Ray,
+        time: f32,
+        _stage: Stage,
+        _include_water: bool,
+    ) -> (Option<Hit>, QueryStats) {
+        let mut stats = QueryStats::default();
+        let hit = self.trace_query::<true>(ray, time, &mut stats);
+        (hit, stats)
+    }
+
+    /// Untimed counterpart of `Scene::occluded`. Every returned blocker has
+    /// passed the same full Hit validation as a nearest-hit query.
+    pub fn occluded_counted(
+        &self,
+        ray: Ray,
+        time: f32,
+        _stage: Stage,
+        max_distance: f32,
+    ) -> (bool, QueryStats) {
+        let mut stats = QueryStats::default();
+        let blocked = self.occluded_query::<true>(ray, time, max_distance, &mut stats);
+        (blocked, stats)
+    }
+
+    fn trace_query<const COUNT: bool>(
+        &self,
+        ray: Ray,
+        time: f32,
+        stats: &mut QueryStats,
+    ) -> Option<Hit> {
+        if time.to_bits() == self.time.to_bits() {
+            self.trace_prepared::<COUNT>(ray, stats)
+        } else {
+            Self::new(self.data.clone(), time).trace_prepared::<COUNT>(ray, stats)
+        }
+    }
+
+    fn trace_prepared<const COUNT: bool>(&self, ray: Ray, stats: &mut QueryStats) -> Option<Hit> {
+        if !valid_ray(ray) {
             return None;
         }
         let mut nearest: Option<Hit> = None;
         for object in &self.objects {
-            if let Some(hit) = object.trace(ray) {
+            if COUNT {
+                stats.objects_considered += 1;
+                stats.primitive_tests += 1;
+            }
+            // Only a previously validated Hit may narrow the distance bound.
+            let limit = nearest.as_ref().map_or(f32::INFINITY, |hit| hit.distance);
+            if let Some(hit) = object.trace::<COUNT>(ray, limit, stats) {
                 if nearest
                     .as_ref()
                     .is_none_or(|old| hit.distance < old.distance)
@@ -600,14 +717,64 @@ impl Snapshot {
         }
         nearest
     }
+
+    fn occluded_query<const COUNT: bool>(
+        &self,
+        ray: Ray,
+        time: f32,
+        max_distance: f32,
+        stats: &mut QueryStats,
+    ) -> bool {
+        if time.to_bits() == self.time.to_bits() {
+            self.occluded_prepared::<COUNT>(ray, max_distance, stats)
+        } else {
+            Self::new(self.data.clone(), time).occluded_prepared::<COUNT>(ray, max_distance, stats)
+        }
+    }
+
+    fn occluded_prepared<const COUNT: bool>(
+        &self,
+        ray: Ray,
+        max_distance: f32,
+        stats: &mut QueryStats,
+    ) -> bool {
+        if !valid_ray(ray) {
+            return false;
+        }
+        // This any-hit path is specific to the validated client format: all
+        // materials are >=32, so none is WATER or EMISSIVE. The core's nearest
+        // emissive shadow semantics must not be replaced by a generic any-hit.
+        for object in &self.objects {
+            if COUNT {
+                stats.objects_considered += 1;
+                stats.primitive_tests += 1;
+            }
+            if let Some(hit) = object.trace::<COUNT>(ray, max_distance, stats) {
+                if hit.distance < max_distance {
+                    if COUNT {
+                        stats.shadow_early_exits += 1;
+                    }
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
+
+fn valid_ray(ray: Ray) -> bool {
+    ray.origin.is_finite()
+        && ray.dir.is_finite()
+        && ray.dir.length_squared().is_finite()
+        && ray.dir.length_squared() > 0.0
+}
+
 impl Scene for Snapshot {
     fn trace(&self, ray: Ray, time: f32, _stage: Stage, _include_water: bool) -> Option<Hit> {
-        if time.to_bits() == self.time.to_bits() {
-            self.trace_prepared(ray)
-        } else {
-            Self::new(self.data.clone(), time).trace_prepared(ray)
-        }
+        self.trace_query::<false>(ray, time, &mut QueryStats::default())
+    }
+    fn occluded(&self, ray: Ray, time: f32, _stage: Stage, max_distance: f32) -> bool {
+        self.occluded_query::<false>(ray, time, max_distance, &mut QueryStats::default())
     }
     fn light_position(&self, time: f32) -> Vec3 {
         assert!(time.is_finite(), "material-room query time must be finite");
@@ -1058,6 +1225,253 @@ mod tests {
                 h.local.z.to_bits(),
             ]
         })
+    }
+
+    #[test]
+    fn diagnostic_counts_bounded_box_axes_and_shadow_prefix_work() {
+        let mut value = fixture_v2();
+        let mut tied = value["objects"][0].clone();
+        tied["id"] = json!(2);
+        let mut farther = tied.clone();
+        farther["id"] = json!(3);
+        farther["position"][0] = json!(-2);
+        value["objects"]
+            .as_array_mut()
+            .unwrap()
+            .extend([tied, farther]);
+        let snapshot = load_value(&value).unwrap().snapshot(0.0);
+        let ray = Ray {
+            origin: Vec3::new(3.0, 1.0, 0.0),
+            dir: -Vec3::X,
+        };
+        for time in [0.0, 2.0] {
+            let (hit, stats) = snapshot.trace_counted(ray, time, Stage::Light, true);
+            assert_eq!(
+                bits(hit),
+                bits(snapshot.trace(ray, time, Stage::Light, true))
+            );
+            assert_eq!(hit.unwrap().object_id, 1);
+            assert_eq!(
+                stats,
+                QueryStats {
+                    objects_considered: 3,
+                    primitive_tests: 3,
+                    direction_transforms: 3,
+                    box_axes_examined: 5,
+                    box_axes_unbounded_visited: 9,
+                    primitive_hits: 1,
+                    full_hit_builds: 1,
+                    valid_hits: 1,
+                    shadow_early_exits: 0,
+                }
+            );
+            let (blocked, stats) = snapshot.occluded_counted(ray, time, Stage::Light, 3.0);
+            assert!(blocked);
+            assert_eq!(blocked, snapshot.occluded(ray, time, Stage::Light, 3.0));
+            assert_eq!(
+                stats,
+                QueryStats {
+                    objects_considered: 1,
+                    primitive_tests: 1,
+                    direction_transforms: 1,
+                    box_axes_examined: 3,
+                    box_axes_unbounded_visited: 3,
+                    primitive_hits: 1,
+                    full_hit_builds: 1,
+                    valid_hits: 1,
+                    shadow_early_exits: 1,
+                }
+            );
+            for limit in [hit.unwrap().distance, 0.0, f32::NEG_INFINITY, f32::NAN] {
+                let (blocked, stats) = snapshot.occluded_counted(ray, time, Stage::Light, limit);
+                assert!(!blocked);
+                assert_eq!(blocked, snapshot.occluded(ray, time, Stage::Light, limit));
+                assert_eq!(stats.primitive_tests, 3);
+                assert_eq!(stats.direction_transforms, 3);
+                assert_eq!(stats.box_axes_examined, if limit > 0.0001 { 3 } else { 0 });
+                assert_eq!(stats.box_axes_unbounded_visited, 9);
+                assert_eq!(stats.primitive_hits, 0);
+                assert_eq!(stats.full_hit_builds, 0);
+                assert_eq!(stats.valid_hits, 0);
+                assert_eq!(stats.shadow_early_exits, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostic_invalid_rays_never_enter_primitive_queries() {
+        let snapshot = load_value(&fixture()).unwrap().snapshot(0.0);
+        for ray in [
+            Ray {
+                origin: Vec3::ZERO,
+                dir: Vec3::ZERO,
+            },
+            Ray {
+                origin: Vec3::splat(f32::INFINITY),
+                dir: Vec3::Z,
+            },
+            Ray {
+                origin: Vec3::ZERO,
+                dir: Vec3::splat(f32::NAN),
+            },
+            Ray {
+                origin: Vec3::ZERO,
+                dir: Vec3::splat(f32::MAX),
+            },
+        ] {
+            let (hit, stats) = snapshot.trace_counted(ray, 0.0, Stage::Core, false);
+            assert!(hit.is_none());
+            assert_eq!(stats, QueryStats::default());
+            let (blocked, stats) = snapshot.occluded_counted(ray, 0.0, Stage::Core, f32::INFINITY);
+            assert!(!blocked);
+            assert_eq!(stats, QueryStats::default());
+        }
+    }
+
+    #[test]
+    fn ellipsoid_queries_keep_original_full_hit_validation_and_no_box_axis_work() {
+        let mut value = fixture_v2();
+        value["objects"][0]["shape"] = json!("ellipsoid");
+        let snapshot = load_value(&value).unwrap().snapshot(0.0);
+        let ray = Ray {
+            origin: Vec3::new(0.0, 1.0, 3.0),
+            dir: -Vec3::Z,
+        };
+        let (hit, stats) = snapshot.trace_counted(ray, 0.0, Stage::Light, true);
+        assert!(hit.is_some());
+        assert_eq!(stats.primitive_tests, 1);
+        assert_eq!(stats.direction_transforms, 1);
+        assert_eq!(stats.primitive_hits, 1);
+        assert_eq!(stats.full_hit_builds, 1);
+        assert_eq!(stats.box_axes_examined, 0);
+        assert_eq!(stats.box_axes_unbounded_visited, 0);
+        for limit in [0.0, hit.unwrap().distance, f32::NAN, f32::INFINITY] {
+            let (blocked, stats) = snapshot.occluded_counted(ray, 0.0, Stage::Light, limit);
+            assert_eq!(blocked, hit.unwrap().distance < limit);
+            assert_eq!(stats.primitive_hits, 1);
+            assert_eq!(stats.full_hit_builds, 1);
+            assert_eq!(stats.valid_hits, 1);
+            assert_eq!(stats.box_axes_examined, 0);
+            assert_eq!(stats.box_axes_unbounded_visited, 0);
+        }
+    }
+
+    #[test]
+    fn rotated_misses_do_not_change_the_later_valid_hit() {
+        let mut value = fixture_v2();
+        let base = value["objects"][0].clone();
+        let mut objects = Vec::new();
+        // A, A, B(miss), B(hit), A. All objects except ID 4 miss this ray.
+        for (index, angle) in [0.0, 0.0, 0.4, 0.4, 0.0].into_iter().enumerate() {
+            let mut object = base.clone();
+            object["id"] = json!(index + 1);
+            object["rotation_y"] = json!(angle);
+            object["position"][0] = json!(if index == 3 { 0 } else { 10 });
+            objects.push(object);
+        }
+        value["objects"] = json!(objects);
+        let snapshot = load_value(&value).unwrap().snapshot(0.0);
+        value["objects"] = json!([objects[3]]);
+        let isolated = load_value(&value).unwrap().snapshot(0.0);
+        let ray = Ray {
+            origin: Vec3::new(0.0, 1.0, 3.0),
+            dir: -Vec3::Z,
+        };
+        let expected = isolated.trace(ray, 0.0, Stage::Light, true).unwrap();
+        let (hit, stats) = snapshot.trace_counted(ray, 0.0, Stage::Light, true);
+        assert_eq!(bits(hit), bits(Some(expected)));
+        assert_eq!(expected.object_id, 4);
+        assert_eq!(stats.primitive_tests, 5);
+        assert_eq!(stats.direction_transforms, 5);
+        assert_eq!(stats.primitive_hits, 1);
+        let (blocked, stats) = snapshot.occluded_counted(ray, 0.0, Stage::Light, 4.0);
+        assert!(blocked);
+        assert_eq!(stats.primitive_tests, 4);
+        assert_eq!(stats.direction_transforms, 4);
+        let (blocked, stats) = snapshot.occluded_counted(ray, 0.0, Stage::Light, expected.distance);
+        assert!(!blocked);
+        assert_eq!(stats.primitive_tests, 5);
+        assert_eq!(stats.direction_transforms, 5);
+        // A new ray must remain independent of the preceding query.
+        let other = Ray {
+            dir: -Vec3::X,
+            ..ray
+        };
+        let (hit, stats) = snapshot.trace_counted(other, 0.0, Stage::Light, true);
+        assert!(hit.is_none());
+        assert_eq!(stats.direction_transforms, 5);
+    }
+
+    #[test]
+    fn moving_tied_objects_keep_snapshot_and_query_time_parity() {
+        let mut value = fixture_v2();
+        let mut moving = value["objects"][0].clone();
+        moving["id"] = json!(2);
+        moving["motion"] = json!({"yaw":{"amplitude":0.5,"speed":1}});
+        let mut same_moving = moving.clone();
+        same_moving["id"] = json!(3);
+        value["objects"]
+            .as_array_mut()
+            .unwrap()
+            .extend([moving, same_moving]);
+        let document = load_value(&value).unwrap();
+        let initial = document.snapshot(0.0);
+        let time = std::f32::consts::FRAC_PI_2;
+        let moved = document.snapshot(time);
+        let ray = Ray {
+            origin: Vec3::new(0.0, 1.0, 3.0),
+            dir: -Vec3::Z,
+        };
+        assert_eq!(
+            initial
+                .trace_counted(ray, 0.0, Stage::Light, true)
+                .1
+                .direction_transforms,
+            3
+        );
+        let (direct, direct_stats) = moved.trace_counted(ray, time, Stage::Light, true);
+        let (fallback, fallback_stats) = initial.trace_counted(ray, time, Stage::Light, true);
+        assert_eq!(direct_stats.direction_transforms, 3);
+        assert_eq!(direct_stats, fallback_stats);
+        assert_eq!(bits(direct), bits(fallback));
+        assert_eq!(
+            initial
+                .trace_counted(ray, 0.0, Stage::Light, true)
+                .1
+                .direction_transforms,
+            3
+        );
+    }
+
+    #[test]
+    fn strict_ties_preserve_first_hit_across_signed_zero_rotations() {
+        let mut value = fixture_v2();
+        let positive = value["objects"][0].clone();
+        let mut negative = positive.clone();
+        negative["id"] = json!(2);
+        negative["rotation_y"] = json!(-0.0);
+        // -0 + -0 keeps the negative angle when preparing the quaternion.
+        negative["motion"] = json!({"yaw":{"amplitude":0,"speed":0,"phase":-1}});
+        let mut negative_again = negative.clone();
+        negative_again["id"] = json!(3);
+        let mut positive_again = positive.clone();
+        positive_again["id"] = json!(4);
+        value["objects"] = json!([positive, negative, negative_again, positive_again]);
+        let snapshot = load_value(&value).unwrap().snapshot(0.0);
+        value["objects"] = json!([value["objects"][0]]);
+        let isolated = load_value(&value).unwrap().snapshot(0.0);
+        let ray = Ray {
+            origin: Vec3::new(0.0, 1.0, 3.0),
+            dir: -Vec3::Z,
+        };
+        let (hit, stats) = snapshot.trace_counted(ray, 0.0, Stage::Light, true);
+        assert_eq!(
+            bits(hit),
+            bits(isolated.trace(ray, 0.0, Stage::Light, true))
+        );
+        assert_eq!(hit.unwrap().object_id, 1);
+        assert_eq!(stats.primitive_tests, 4);
+        assert_eq!(stats.direction_transforms, 4);
     }
 
     #[test]

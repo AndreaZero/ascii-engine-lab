@@ -434,7 +434,7 @@ fn count_queries(
     Ok(
         json!({"scene_name":document.name(),"input_scene":document.source(),"objects":document.object_count(),"grid":[options.cols,options.rows],
         "path":if moving_camera {"coverage6s"} else {"authored_static"},"records":records,
-        "scope":"Untimed serial counting compositions. Secondary combines environment visibility and reflected traces. occluded calls bypass wrapper trace. Primitive attempts derived from the current all-object Snapshot scan; not CPU time or GPU work."}),
+        "scope":"Untimed serial counting compositions. Secondary combines environment visibility and reflected traces. occluded calls bypass wrapper trace. linear_producer_primitive_attempts is the hypothetical R12 full-scan count (calls times objects), not the actual R13 traversal work; use the R13 query audit for actual attempts. Not CPU time or GPU work."}),
     )
 }
 
