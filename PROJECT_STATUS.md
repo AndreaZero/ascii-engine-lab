@@ -23,11 +23,12 @@ A reusable renderer under development in Rust + wgpu. Spatial queries produce ch
 | Alpha data gate, R11 | Independent client consumes validated v2 surfaces, conductors, constant environment and authored cameras; v1 compatibility and atomic reload | [Alpha data](ALPHA_DATA.md); 204 test executions, 60 legacy PNGs unchanged, backend parity and clean-source build/run guide; bounded experimental scope |
 | Primary coverage, R12 | Opt-in Conservative9 semantic sampling with coverage-aware history; Center remains default | [Geometry coverage](GEOMETRY_COVERAGE.md); 292 test executions, 72 legacy PNGs unchanged, dense geometry comparisons, three-view windows/motion; silhouette expansion, sample gaps and measured extra cost remain |
 | Query work, R13 | Exact distance-limited box helper and explicit bounded diagnostics; client integration rejected for CPU cost, ordinary R12 traversal retained | [Query acceleration](QUERY_ACCELERATION.md); 324 test executions, frozen hit/tie/cell comparisons, 1,152 final-default PNGs unchanged, three-view native windows; fewer axes are not a runtime speedup |
+| Dynamic occupancy, R14 | Atomic client-owned insertion/removal/absolute transforms, lifetime handles, immutable retained snapshots and optional global history epoch | [Dynamic occupancy](DYNAMIC_OCCUPANCY.md); 376 workspace test executions, 27 focused release tests, independent reconstruction and transport probes, 120 legacy PNGs unchanged and 1,080 matching backend pairs; bounded updates, not physics or spatial acceleration |
 | CPU configuration | Serial path and configurable private worker pool, explicit density profiles | [Performance](PERFORMANCE.md), [portability](PORTABILITY.md); one machine does not establish minimum system requirements |
 
 ## Work in progress
 
-R11 closes the bounded alpha data gate. R12 verifies an optional nine-ray primary coverage policy, fixed scene/camera paths, independent dense-reference comparisons and real-window pacing in three views. It recovers thin foreground but widens silhouettes, can hide small background slivers and still misses between samples. R13 verifies an exact bounded-box helper and compares a client integration against R12 on the same workloads. Fewer axes did not improve measured CPU cost, so the integration was rejected and ordinary traversal remains R12. The general geometry/motion/cost gate remains open: primary traversal is still linear, and operation counts do not establish universal frame-time gains. Dynamic occupancy updates are the next bounded capability; broader spatial rejection requires an explicit numerical contract. API stability, final art, general authoring and another physical machine remain open. See [the engine development path](ENGINE_PATH.md).
+R11 closes the bounded alpha data gate. R12 verifies an optional nine-ray primary coverage policy, fixed scene/camera paths, independent dense-reference comparisons and real-window pacing in three views. It recovers thin foreground but widens silhouettes, can hide small background slivers and still misses between samples. R13 verifies an exact bounded-box helper and compares a client integration against R12 on the same workloads. Fewer axes did not improve measured CPU cost, so the integration was rejected and ordinary traversal remains R12. R14 closes the bounded client occupancy/lifetime gate: transactions publish one validated state, surviving handles remain stable, recreated IDs receive new generations and retained snapshots remain coherent. Effective commits reset all glyph history conservatively; continuous updates reduce history reuse. The general geometry/motion/cost gate remains open: traversal is still linear, and operation counts do not establish universal frame-time gains. Practical creation/save/reopen for the supported subset and validation on another physical machine are next; broader spatial rejection needs explicit numerical semantics. API stability and final art remain open. See [the engine development path](ENGINE_PATH.md).
 
 Fire, richer water dynamics, destructible environments, gameplay integration, more content and tools remain separate future work. Their inclusion in the design does not imply implementation.
 
@@ -47,6 +48,16 @@ R12 CPU-only medians at 240x135 with 8 workers are 4.43 / 4.96 / 5.25 ms for Cen
 
 R13 compares the bounded experiment with frozen R12 on identical moving workloads: 144 CPU cases, 17,280 measured frames and three interleaved repetitions. At 240x135/eight workers, v2 Conservative9 median p50 changes from 15.260 / 15.114 / 15.365 ms to 18.606 / 18.167 / 18.528 ms; coverage Conservative9 changes from 21.944 / 21.721 / 22.361 to 25.644 / 23.207 / 23.871 ms. Across one/eight-worker cases, 53/72 baseline and 54/72 experimental runs exceed p95 16.7 ms. The integration is rejected and the final default retains R12 traversal. The reusable helper preserves the strict distance/tie contract, but reduced axis counts are not an elapsed-time gain. The complete experiment, failed variants, final-default parity and separate native-window checks are recorded in [R13](QUERY_ACCELERATION.md). The general cost gate remains open.
 
+R14 dynamic-room CPU-only total medians at 240x135/eight workers are 4.666 /
+3.970 / 5.030 ms with Center and 15.893 / 15.695 / 16.360 ms with Conservative9.
+Center exceeds p95 16.7 ms in 0/9 runs; Nine in 9/9 (worst 19.493 ms).
+Commit-frame publication p50 spans 0.2185–0.3319 ms, worst p95 0.5759 ms on this
+small room. The 72-case/9,720-frame matrix includes a separate unchanged-v2
+comparison against R13: legacy Nine exceeds the budget in 8/9 runs for each
+revision, with worst p95 increasing from 20.621 to 37.431 ms. This is retained
+as measured variability, not a speedup claim. See [R14](DYNAMIC_OCCUPANCY.md)
+for full one/eight-worker results, native-window evidence and limitations.
+
 ## Website/documentation coordination
 
 The engine coordinator owns this status file, engine source and verification reports. The website project owns page structure, layout, navigation and presentation. Link technical claims to reports and label each capability as verified, experimental or planned. Preserve the distinction between intended visual quality and achieved quality.
@@ -55,4 +66,4 @@ The separate website repository is now identified as [ascii-engine-website](http
 
 Generated captures and movies remain local and are excluded from Git, as are private visual references. The website should not promise downloadable binaries or embed unavailable media. Request a specific delivery of selected original captures when needed; do not publish the user's reference screenshots as project assets.
 
-Primary links: [repository](https://github.com/AndreaZero/ascii-engine-lab), [getting started](README.md), [package metadata](Cargo.toml). The package is version 0.1.0; R1–R13 are development tranche labels, not semantic version releases.
+Primary links: [repository](https://github.com/AndreaZero/ascii-engine-lab), [getting started](README.md), [package metadata](Cargo.toml). The package is version 0.1.0; R1–R14 are development tranche labels, not semantic version releases.

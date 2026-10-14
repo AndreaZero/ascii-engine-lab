@@ -116,6 +116,7 @@ pub struct FrameStats {
 #[derive(Default)]
 pub struct Composer {
     previous_cells: Vec<HistoryCell>,
+    previous_epoch: u64,
     scratch: Vec<CellResult>,
     // None means truly serial execution on the caller, without a Rayon pool.
     pool: Option<rayon::ThreadPool>,
@@ -175,6 +176,11 @@ impl Composer {
         rows: u32,
         aspect: f32,
     ) -> (Vec<GlyphCell>, FrameStats) {
+        let epoch = scene.history_epoch();
+        if epoch != self.previous_epoch {
+            self.reset();
+            self.previous_epoch = epoch;
+        }
         let count = (cols * rows) as usize;
         let local_materials = scene.local_materials();
         let prepared = PreparedFrame {

@@ -2,6 +2,8 @@
 
 Questa applicazione dipende da `ascii-render`, non da `ascii-engine-lab`. Carica oggetti, materiali, luce e camere da un JSON validato; prepara uno snapshot immutabile per fotogramma e lo passa al compositore. Non importa figura o cortile BLACKWATER. La versione 2 dei dati espone superfici locali, conduttori e ambiente limitato; la versione 1 conserva il percorso R6. Forme e materiali sono dimostrativi, non il target artistico finale né una API stabile.
 
+R14 aggiunge [transazioni di occupazione](#occupazione-dinamica-r14) nel client: inserimento, rimozione e trasformazione assoluta, con identità di istanza e snapshot precedenti immutabili. L'API e la timeline `--updates` sono verificate con test, ricostruzione indipendente e runtime nelle tre viste. Il [report R14](../../DYNAMIC_OCCUPANCY.md) riporta risultati e limiti di costo, distinti dalla qualità artistica.
+
 ## Query R13
 
 R13 verifica un helper box con limite esatto, ma la sua integrazione sperimentale
@@ -37,7 +39,7 @@ Il default CLI e `Avvia-materiali.cmd` rimangono sul campione v1; per v2 passare
 
 Su Windows, [Avvia-alpha.cmd](../../Avvia-alpha.cmd) avvia direttamente v2 e ricompila sempre con `--locked --release`, così l'eseguibile segue i sorgenti correnti. Accetta gli stessi argomenti aggiuntivi della CLI.
 
-Comandi: **1/2/3** prima/terza/alto; **Q/E** orbita; **WASD** sposta osservatore; **Z/X** altezza; **Spazio** pausa; **R** rilegge JSON; **H** etichette; **C** cambia campionamento primario; **P** attiva/disattiva il percorso camera dello studio di copertura; **Esc** chiude. Una ricarica valida sostituisce insieme tutti i dati, ripristina la camera del modo corrente dalla nuova scena e azzera la history dei glifi; il tempo di animazione prosegue. Un file non valido conserva documento, camera, tempo e history precedenti e stampa la diagnosi. I tasti 1/2/3 ripartono dalla camera dichiarata per quel modo. Anche C e P azzerano la history. Le camere sono osservatori, non controlli di un personaggio giocabile.
+Comandi: **1/2/3** prima/terza/alto; **Q/E** orbita; **WASD** sposta osservatore; **Z/X** altezza; **Spazio** pausa; **R** rilegge JSON; **H** etichette; **C** cambia campionamento primario; **P** attiva/disattiva il percorso camera dello studio di copertura; **Esc** chiude. Una ricarica valida sostituisce insieme i dati, ripristina la camera del modo corrente e azzera la history dei glifi. Senza `--updates` il tempo di animazione prosegue, come nel comportamento precedente. Con `--updates`, R valida insieme scena e intera sequenza degli eventi, crea un nuovo stato runtime e riparte dal tempo iniziale `--time` (default zero), applicando gli eventi già dovuti a quell'istante. Un errore, anche in un evento futuro, conserva documento, playback, camera, tempo e history precedenti e stampa la diagnosi. I tasti 1/2/3 ripartono dalla camera dichiarata per quel modo. Anche C e P azzerano la history. Le camere sono osservatori, non controlli di un personaggio giocabile.
 
 `--profile economy|balanced|detail`, `--workers auto|N` e `--backend auto|vulkan|dx12|metal|gl` usano gli stessi budget del laboratorio. `--sequence 180 --camera all` salva 180 PNG per vista a tick simulati di 1/30 s; `--time` sceglie il tempo iniziale; `--seconds` limita lo smoke a finestra. `--frames` senza `--sequence` avanza comunque lo stato di 1/30 s per frame, misura tutti i fotogrammi e salva il primo e l'ultimo. `--orbit-speed` è solo headless, accetta da -2 a 2 radianti/s e aggiunge un'orbita dalla posa iniziale: `frame / 30 * speed`. Il default 0 lascia ferma la camera. Le catture sono GPU reali, non immagini ricostruite con un altro renderer.
 
@@ -76,6 +78,90 @@ cargo run --locked --release -p ascii-material-room --example coverage_audit -- 
 ```
 
 L'audit predefinito usa 13 istanti inclusivi fra 0 e 6 secondi, griglia 80×45 e riferimento 16×16 punti per cella. A inizio, metà e fine percorso ripete il riferimento a 32×32 per misurarne la convergenza. Il JSON conserva risultati per oggetto, assenze agli istanti campionati, transizioni e confronto history/fresh; riporta separatamente conteggi delle query del client R11 e del carico di copertura. Un budget esplicito di 250 milioni di raggi limita le combinazioni richieste. Gli istanti discreti non dimostrano assenza di errori intermedi, né il riferimento finito costituisce una verità geometrica esatta.
+
+## Occupazione dinamica R14
+
+`RuntimeScene`, in [src/runtime.rs](src/runtime.rs), è un proprietario mutabile del documento usato fra i frame. `apply_transaction(expected_revision, operations)` prepara un documento candidato e lo valida con `SceneDocument` prima di pubblicare insieme dati, identità e revisione. Una query non modifica mai la simulazione. Materiali, luce e camere conservano il formato v1/v2; questa API modifica soltanto gli oggetti e non introduce una gerarchia spaziale, fisica o distruzione completa.
+
+| Operazione Rust | Effetto |
+| --- | --- |
+| `Operation::Insert { object }` | Inserisce un `serde_json::Value` con lo schema oggetto esistente; ID libero, materiale e tutti i campi devono essere validi |
+| `Operation::Remove { handle }` | Rimuove l'istanza viva identificata dall'handle |
+| `Operation::SetTransform { handle, transform }` | Sostituisce `position`, `half_extents` e `rotation_y`; rimuove l'eventuale `motion`, quindi la posa è assoluta |
+
+`ObjectHandle { namespace, id, generation }` distingue anche istanze successive dello stesso ID. Un oggetto superstite mantiene l'handle durante trasformazioni e modifiche ad altri oggetti; una rimozione seguita da reinserimento assegna una generazione nuova. Gli handle di un altro runtime o di una vecchia istanza sono respinti. `SceneRevision { namespace, revision }` protegge la transazione da uno stato atteso ormai superato. Namespace e token appartengono all'esecuzione: il riferimento persistente nei dati rimane l'ID dichiarato dall'autore.
+
+Ogni batch ammette fino a 128 operazioni e una sola operazione per ID; il documento finale contiene al massimo 128 oggetti. Per rimuovere e reinserire lo stesso ID servono due commit, anche senza un frame intermedio. Gli inserimenti v1 vengono aggiunti dopo i superstiti, conservando l'ordine precedente; v2 mantiene la priorità per ID nelle uguaglianze di distanza. Un errore lascia invariati documento, revisione, generazioni ed epoch. Batch vuoti e trasformazioni identiche per bit `f32`, senza `motion`, non avanzano lo stato; togliere un campo `motion` presente è invece una modifica, anche se la sua ampiezza è zero. I contatori non vengono riciclati: un esaurimento viene respinto prima della pubblicazione.
+
+Il risultato `CommitReceipt` contiene `changed`, la nuova `revision` e gli handle `inserted`. `handle(id)`, `handles()`, `source()`, `camera(mode)` e `snapshot(time)` permettono di usare il runtime direttamente, senza file eventi. Esempio con il campione v2:
+
+```rust
+use ascii_material_room::{
+    Operation, RuntimeScene, RuntimeSnapshot, SceneDocument, Transform,
+    DEFAULT_SCENE_V2_JSON,
+};
+use glam::Vec3;
+
+fn moved_snapshot() -> Result<RuntimeSnapshot, String> {
+    let document = SceneDocument::from_json(DEFAULT_SCENE_V2_JSON)?;
+    let mut state = RuntimeScene::new(document)?;
+    let handle = state.handle(2).ok_or("object 2 is absent")?;
+    let expected = state.revision();
+    state.apply_transaction(expected, &[Operation::SetTransform {
+        handle,
+        transform: Transform {
+            position: Vec3::new(-2.0, 1.25, -1.8),
+            half_extents: Vec3::new(0.4, 1.25, 0.45),
+            rotation_y: 0.2,
+        },
+    }])?;
+    Ok(state.snapshot(1.0))
+}
+```
+
+Passare lo snapshot restituito a `Composer::compose` con lo stesso tempo. `RuntimeSnapshot` conserva il normale `Snapshot`, le identità vive e un `history_epoch` immutabile; primarie, ombre e riflessi vedono lo stesso stato. Gli snapshot precedenti restano utilizzabili dopo altri commit, anche nel fallback delle query a un tempo diverso. Il compositore legge l'epoch una volta per composizione e scarta la history quando cambia, compreso il ritorno a uno snapshot vecchio. È un reset globale conservativo: l'occupazione può cambiare ombre e riflessi su ricevitori non modificati. Aggiornamenti continui riducono quindi il riuso temporale; non è un'invalidazione selettiva per oggetto.
+
+Il normale `SceneDocument::snapshot` conserva il proprio percorso. L'host senza playback usa `RuntimeSnapshot::untracked(inner)`, con epoch zero e senza allocazione delle identità; tutti gli hook di query delegano allo snapshot interno. I token runtime univoci vengono assegnati solo alla creazione e ai commit effettivi, senza contatori atomici per raggio.
+
+### Timeline e launcher
+
+[src/updates.rs](src/updates.rs) usa questa API per riprodurre un file eventi separato. `--updates` non cambia la versione della scena: il formato eventi ha `version: 1`, indipendente dalle scene v1 e v2. [dynamic-room-v2.json](assets/dynamic-room-v2.json) e [dynamic-updates-v1.json](assets/dynamic-updates-v1.json) forniscono un caso di inserimento, apertura tramite trasformazioni discrete, rimozione e riuso di un ID. Nessuna interpolazione o simulazione fisica è implicita.
+
+```sh
+cargo run --locked --release -p ascii-material-room -- --scene clients/material-room/assets/dynamic-room-v2.json --updates clients/material-room/assets/dynamic-updates-v1.json --validate
+cargo run --locked --release -p ascii-material-room -- --scene clients/material-room/assets/dynamic-room-v2.json --updates clients/material-room/assets/dynamic-updates-v1.json --sequence 181 --camera all --profile detail --workers 8 --output evidence/my-dynamic-room
+```
+
+[Avvia-occupazione.cmd](../../Avvia-occupazione.cmd) ricompila sempre con `--locked --release`, avvia questi due file con profilo detail, worker automatici e output `evidence/r14/interactive`; inoltra gli argomenti aggiuntivi. Center resta il campionamento predefinito; `--sampling conservative9` o C selezionano l'altra policy.
+
+Schema minimo di una sequenza riferita a un ID 3 inizialmente presente:
+
+```json
+{
+  "version": 1,
+  "events": [
+    { "tick": 30, "operations": [
+      { "op": "transform", "id": 3, "position": [1, 1, 0],
+        "half_extents": [0.5, 1, 0.1], "rotation_y": 0.5 }
+    ] },
+    { "tick": 60, "operations": [{ "op": "remove", "id": 3 }] },
+    { "tick": 90, "operations": [
+      { "op": "insert", "object": {
+        "id": 3, "name": "New panel lifetime", "shape": "box", "material": 33,
+        "position": [0, 1, 0], "half_extents": [0.5, 1, 0.1]
+      } }
+    ] }
+  ]
+}
+```
+
+Il file UTF-8 ammette al massimo 1 MiB, 256 eventi e 128 operazioni per evento. I tick interi sono assoluti, a 30 tick/s, strettamente crescenti e nell'intervallo 0..2.592.000; unire nello stesso evento le operazioni dello stesso tick. Campi sconosciuti e chiavi duplicate sono respinti. `transform` richiede tutti i campi mostrati e usa gli stessi limiti del formato oggetto. I comandi del file risolvono l'ID nell'istanza viva al momento dell'evento; un'applicazione che conserva riferimenti fra commit deve usare gli handle dell'API Rust.
+
+`Playback::new` prova l'intera sequenza su uno stato temporaneo prima di esporre il playback: anche un riferimento invalido in un evento futuro impedisce il caricamento. `--validate` controlla scena e sequenza senza creare GPU o finestra. `advance_to(tick)` applica in ordine tutti i batch dovuti, anche saltando più tick; il singolo batch è atomico, l'intero recupero di più eventi non lo è. Non si può tornare a un tick precedente; per ripartire occorre un nuovo playback. Dopo l'ultimo evento rimane l'occupazione finale, mentre eventuali movimenti authored non sostituiti continuano.
+
+In headless ogni vista riparte dallo stesso documento e dalla stessa sequenza caricata una sola volta. `--time` applica prima del primo frame tutti gli eventi fino a `floor(time * 30)`; ogni frame successivo avanza di un tick. In finestra il tick segue il tempo di simulazione, con recupero degli eventi dovuti prima dello snapshot e pausa tramite Spazio. R ricarica atomicamente scena e sequenza e riparte da `--time`; senza `--updates`, R conserva invece il tempo corrente. Il limite di un giorno riguarda gli eventi e il tempo iniziale CLI: il playback può continuare oltre l'ultimo tick previsto.
+
+Le transazioni vengono misurate separatamente da snapshot e composizione: `update_ms`, `commit_frame_update_ms` e `cpu_update_snapshot_and_compose_ms` nei report distinguono costo degli eventi e totale CPU. Prevalidazione e recupero iniziale a `--time` restano fuori dai timer dei frame. Non leggere il solo costo di composizione come costo completo degli aggiornamenti, né il tempo di submission/attesa come GPU time. Risultati della tranche e criteri di uscita appartengono al [report R14](../../DYNAMIC_OCCUPANCY.md), verificato con costi e limiti espliciti.
 
 ## Dati comuni e compatibilità v1
 
@@ -144,7 +230,7 @@ I due vettori sono rispettivamente irradianza diffusa E e radianza speculare, co
 
 `eye` e `target` hanno componenti ±10000, devono distare più di 0.0001 unità e definire una direzione non parallela o quasi parallela all'asse Y. La base della camera usa Y come alto del mondo. `fov_y_degrees` è l'angolo verticale 1..179 gradi, usato da prima e terza persona; `ortho_half_height` è la semialtezza ortografica 0.01..10000, usata dall'alto. Entrambi sono obbligatori e validati in ogni vista. Orbita, offset e zoom sono stato dell'host: in prima persona l'orbita mantiene fermo l'occhio, nelle altre viste mantiene fermo il target.
 
-Gli ID sono assegnati dall'autore e non dalla posizione nell'array. In v2 un'uguaglianza esatta di distanza fra superfici è risolta dall'ID oggetto minore; riordinare materiali e oggetti conserva il risultato. La v1 mantiene invece l'ordine originale per non cambiare i vecchi output. Riutilizzare un ID per un contenuto diverso richiede un reset della history: il reload dell'host lo esegue sempre.
+Gli ID sono assegnati dall'autore e non dalla posizione nell'array. In v2 un'uguaglianza esatta di distanza fra superfici è risolta dall'ID oggetto minore; riordinare materiali e oggetti conserva il risultato. La v1 mantiene invece l'ordine originale per non cambiare i vecchi output. Riutilizzare un ID per un contenuto diverso richiede un reset della history: il reload dell'host lo esegue sempre; il runtime R14 distingue la nuova generazione e cambia epoch al commit.
 
 Per migrare un proprio file, farne una copia, portare `version` a 2, aggiungere `surface` a ogni materiale e tutte le `cameras`; poi aggiungere facoltativamente `light.color`, `metallic` e `environment`. Verificare con `--validate` prima dell'anteprima. L'immagine può cambiare: v2 attiva una risposta locale e il filtro dei pattern, quindi la migrazione non promette parità visiva con v1. Per conservare l'aspetto legacy mantenere la versione 1.
 
@@ -168,6 +254,8 @@ cargo test --locked --workspace --all-targets
 [tests/data_contract.rs](tests/data_contract.rs) confronta il produttore v1 con il sorgente e JSON congelati di fine R10: celle e statistiche bit per bit nelle tre camere, quattro stage, tempi ripetuti/in movimento, uno e otto worker e reset della history. Altri test verificano indipendenza degli snapshot, determinismo v2, riordino con ID stabili, modifiche di materiali/luce/ambiente/camere solo dai dati e rifiuto degli errori annidati. Il confronto usa il compositore corrente su entrambi i produttori; le regressioni storiche del renderer sono coperte separatamente nel workspace. Le prove dell'host coprono la ricarica valida/invalida e il reset di camera/history.
 
 [tests/r11_composition_parity.rs](tests/r11_composition_parity.rs) confronta invece il compositore corrente in modalità predefinita con camera e compositore congelati al commit R11 `9866c35`, su dati v1/v2, tre viste, tempi, reset e uno/otto worker. [coverage_contract.rs](../../crates/ascii-render/tests/coverage_contract.rs) usa piani e strisce analitici indipendenti per verificare geometria sottile davanti a uno sfondo, occlusione completa, selezione per profondità, impronta materiale, disocclusioni e provenienza della history. Registra anche due limiti intenzionali: geometria ancora persa fra i campioni e supporto apparente allargato. Le copie congelate conservano i propri test originali: le loro esecuzioni ripetute non sono capacità aggiuntive.
+
+Per R14, [dynamic_occupancy.rs](tests/dynamic_occupancy.rs) e i test di runtime/playback coprono transazioni, vecchi snapshot, identità e occupazione; [history_epoch.rs](../../crates/ascii-render/tests/history_epoch.rs) esercita l'invalidazione nel compositore. L'esempio [occupancy_audit.rs](examples/occupancy_audit.rs) è l'audit dedicato. Test workspace/release, audit e runtime nelle tre visuali sono passati; misure complete e limiti sono nel report R14.
 
 ## Evidenze
 

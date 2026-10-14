@@ -1,5 +1,10 @@
 //! A separate host: content files and application state belong to this client.
-use ascii_material_room::{content::SceneDocument, coverage_study::coverage_camera};
+use ascii_material_room::{
+    content::SceneDocument,
+    coverage_study::coverage_camera,
+    runtime::RuntimeSnapshot,
+    updates::{Playback, UpdateSequence, TICKS_PER_SECOND},
+};
 use ascii_render::{
     budget::Profile,
     camera::{Camera, Mode},
@@ -44,6 +49,7 @@ struct Options {
     sampling: PrimarySampling,
     coverage_path: bool,
     cpu_only: bool,
+    updates: Option<PathBuf>,
 }
 impl Options {
     fn read() -> Result<Self> {
@@ -71,6 +77,7 @@ impl Options {
             sampling: PrimarySampling::Center,
             coverage_path: false,
             cpu_only: false,
+            updates: None,
         };
         let mut requested = None;
         while let Some(arg) = args.next() {
@@ -82,6 +89,7 @@ impl Options {
                     o.headless = true;
                 }
                 "--help" => {
+                    println!("R14: --updates FILE replays validated occupancy transactions at absolute 30 Hz ticks. R reloads scene and updates atomically, restarting their clock.");
                     println!("R12: --sampling center|conservative9 (default center)\n--camera-path static|coverage (6-second deterministic path)\n--cpu-only: CPU measurement without GPU/captures, implies --headless\nWindow: C toggles sampling, P toggles scripted path; metrics saved to --output/window-run.json");
                     println!("ASCII MATERIAL ROOM\n--scene FILE --validate\n--headless --camera first|third|overhead|all --frames N --time SECONDS --output DIR\n--sequence N: capture every frame at 30 simulation ticks/s\n--orbit-speed RADIANS_PER_SECOND: headless camera motion (default 0)\n--profile economy|balanced|detail --workers auto|N --backend auto|vulkan|dx12|metal|gl\n--seconds N: window smoke duration\nWindow: 1/2/3 view, Q/E rotate, WASD move, Z/X height, Space pause, R reload scene and camera, H labels, Esc exit.\nThe default scene is the compatible v1 sample; pass --scene clients/material-room/assets/material-room-v2.json for local materials/environment and authored cameras.");
                     std::process::exit(0);
@@ -92,6 +100,7 @@ impl Options {
                         .ok_or_else(|| format!("{arg} requires a value"))?;
                     match arg.as_str() {
                         "--scene" => o.scene = value.into(),
+                        "--updates" => o.updates = Some(value.into()),
                         "--output" => o.output = value.into(),
                         "--profile" => {
                             o.profile = Profile::parse(&value).ok_or("invalid profile")?
@@ -189,6 +198,30 @@ fn distribution(values: &[f64]) -> Value {
     let q = |p: f64| values[((values.len() - 1) as f64 * p).round() as usize];
     json!({"p50":q(0.5),"p95":q(0.95),"p99":q(0.99)})
 }
+
+fn playback(o: &Options, doc: &SceneDocument) -> Result<Option<Playback>> {
+    o.updates
+        .as_ref()
+        .map(|path| Ok(Playback::new(doc.clone(), UpdateSequence::load(path)?)?))
+        .transpose()
+}
+
+fn snapshot(doc: &SceneDocument, playback: &Option<Playback>, time: f32) -> RuntimeSnapshot {
+    playback.as_ref().map_or_else(
+        || RuntimeSnapshot::untracked(doc.snapshot(time)),
+        |playback| playback.state().snapshot(time),
+    )
+}
+
+fn update_state(playback: &Option<Playback>) -> Value {
+    playback.as_ref().map_or(Value::Null, |playback| json!({
+        "tick":playback.tick(),"completed_events":playback.completed_events(),
+        "committed_updates":playback.committed_updates(),
+        "revision":playback.state().revision().revision,
+        "objects":playback.state().object_count(),
+        "identities":playback.state().handles().map(|h| json!({"id":h.id,"generation":h.generation})).collect::<Vec<_>>()
+    }))
+}
 // Evidence only, outside composition/submission timers. Counts query coverage,
 // not the readability or perceptual stability of the resulting glyphs.
 fn coverage(scene: &impl Scene, cam: Camera, t: f32, cols: u32, rows: u32, aspect: f32) -> Value {
@@ -212,6 +245,21 @@ fn coverage(scene: &impl Scene, cam: Camera, t: f32, cols: u32, rows: u32, aspec
         .collect::<Vec<_>>())
 }
 fn headless(o: &Options, doc: &SceneDocument) -> Result<()> {
+    // Reject the complete update plan before creating GPU resources.
+    // Freeze the file once for every view and for the recorded provenance.
+    let sequence = o
+        .updates
+        .as_ref()
+        .map(|path| UpdateSequence::load(path))
+        .transpose()?;
+    let make_playback = || -> Result<Option<Playback>> {
+        sequence
+            .as_ref()
+            .map(|sequence| Ok(Playback::new(doc.clone(), sequence.clone())?))
+            .transpose()
+    };
+    let mut validated_playback = make_playback()?;
+    let input_updates = sequence.as_ref().map(|sequence| sequence.source().clone());
     let (w, h, cols, rows) = o.profile.dimensions();
     let mut gpu = if o.cpu_only {
         None
@@ -228,13 +276,22 @@ fn headless(o: &Options, doc: &SceneDocument) -> Result<()> {
     };
     let mut runs = Vec::new();
     for mode in modes {
+        let mut playback = if let Some(first) = validated_playback.take() {
+            Some(first)
+        } else {
+            make_playback()?
+        };
+        let start_tick = (o.time * TICKS_PER_SECOND as f32).floor() as u32;
+        if let Some(playback) = &mut playback {
+            playback.advance_to(start_tick)?;
+        }
         let folder = o.output.join(mode.name());
         std::fs::create_dir_all(&folder)?;
         let cam = doc.camera(mode);
         let aspect = w as f32 / h as f32;
         let mut composer = Composer::with_threads(o.workers)?;
         composer.set_primary_sampling(o.sampling);
-        let frozen = doc.snapshot(o.time);
+        let frozen = snapshot(doc, &playback, o.time);
         let (a, _) = composer.compose(&frozen, cam, o.time, Stage::Light, cols, rows, aspect);
         let (b, _) = composer.compose(&frozen, cam, o.time, Stage::Light, cols, rows, aspect);
         composer.reset();
@@ -254,14 +311,24 @@ fn headless(o: &Options, doc: &SceneDocument) -> Result<()> {
         let mut cpu = Vec::new();
         let mut snapshot_times = Vec::new();
         let mut composition_times = Vec::new();
+        let mut update_times = Vec::new();
+        let mut commit_times = Vec::new();
+        let mut total_times = Vec::new();
         let mut gpu_wait = Vec::new();
         let mut frame_rows = Vec::new();
         let mut coverage_audits = Vec::new();
-        let mut csv = String::from("frame,time_s,cpu_snapshot_and_compose_ms,submit_wait_ms,visible,matched,glyph_changes,snapshot_ms,compose_ms,primary_rays,alternate_primary\n");
+        let mut csv = String::from("frame,time_s,cpu_snapshot_and_compose_ms,submit_wait_ms,visible,matched,glyph_changes,snapshot_ms,compose_ms,primary_rays,alternate_primary,update_ms,cpu_total_ms,commits\n");
         for i in 0..o.frames {
             let t = o.time + i as f32 / 30.;
+            let update_start = Instant::now();
+            let commits = if let Some(playback) = &mut playback {
+                playback.advance_to(start_tick + i as u32)?
+            } else {
+                0
+            };
+            let update_ms = update_start.elapsed().as_secs_f64() * 1000.;
             let start = Instant::now();
-            let snapshot = doc.snapshot(t);
+            let snapshot = snapshot(doc, &playback, t);
             let snapshot_ms = start.elapsed().as_secs_f64() * 1000.;
             let moving_cam = o.camera_at(cam, i as f32 / 30.);
             let compose_start = Instant::now();
@@ -269,6 +336,12 @@ fn headless(o: &Options, doc: &SceneDocument) -> Result<()> {
                 composer.compose(&snapshot, moving_cam, t, Stage::Light, cols, rows, aspect);
             let cpu_ms = start.elapsed().as_secs_f64() * 1000.;
             let compose_ms = compose_start.elapsed().as_secs_f64() * 1000.;
+            let total_ms = update_ms + cpu_ms;
+            update_times.push(update_ms);
+            total_times.push(total_ms);
+            if commits > 0 {
+                commit_times.push(update_ms);
+            }
             cpu.push(cpu_ms);
             snapshot_times.push(snapshot_ms);
             composition_times.push(compose_ms);
@@ -289,13 +362,14 @@ fn headless(o: &Options, doc: &SceneDocument) -> Result<()> {
                 );
             }
             csv.push_str(&format!(
-                "{i},{t:.8},{cpu_ms:.6},{wait_ms:.6},{},{},{},{snapshot_ms:.6},{compose_ms:.6},{},{}\n",
+                "{i},{t:.8},{cpu_ms:.6},{wait_ms:.6},{},{},{},{snapshot_ms:.6},{compose_ms:.6},{},{},{update_ms:.6},{total_ms:.6},{commits}\n",
                 stats.visible, stats.matched, stats.glyph_changes, stats.primary_rays, stats.alternate_primary
             ));
             frame_rows.push(
                 json!({"frame":i,"time":t,"visible":stats.visible,"matched":stats.matched,
                 "glyph_changes":stats.glyph_changes,"mean_color_delta":stats.mean_color_delta,
-                "primary_rays":stats.primary_rays,"alternate_primary":stats.alternate_primary}),
+                "primary_rays":stats.primary_rays,"alternate_primary":stats.alternate_primary,
+                "commits":commits,"update_ms":update_ms,"dynamic_state":update_state(&playback)}),
             );
         }
         std::fs::write(folder.join("frames.csv"), csv)?;
@@ -303,6 +377,8 @@ fn headless(o: &Options, doc: &SceneDocument) -> Result<()> {
         runs.push(json!({"camera":mode.name(),"eye":eye.to_array(),"target":target.to_array(),"orbit":cam.orbit,"zoom":cam.zoom,
             "frame_count":o.frames,"static_changed_cells":0,"cpu_snapshot_and_compose_ms":distribution(&cpu),
             "snapshot_ms":distribution(&snapshot_times),"compose_ms":distribution(&composition_times),
+            "update_ms":distribution(&update_times),"commit_frame_update_ms":distribution(&commit_times),
+            "cpu_update_snapshot_and_compose_ms":distribution(&total_times),"final_dynamic_state":update_state(&playback),
             "submit_wait_ms":distribution(&gpu_wait),"frames":frame_rows,"coverage_audits":coverage_audits}));
         println!(
             "{}: {} {} frames from {}",
@@ -314,12 +390,15 @@ fn headless(o: &Options, doc: &SceneDocument) -> Result<()> {
     }
     let manifest = json!({"client":"ascii-material-room","scene_path":o.scene,"scene_name":doc.name(),"scene_version":doc.version(),"objects":doc.object_count(),
         "input_scene":doc.source(),
+        "input_updates":input_updates,"updates_path":o.updates,
         "grid":[cols,rows],"output":[w,h],"profile":o.profile.name(),"workers":o.workers,"stage":"light",
         "simulation_ticks_per_second":30,"time_start":o.time,"camera_orbit_speed":o.orbit_speed,
         "primary_sampling":o.sampling_name(),"camera_path":if o.coverage_path {"coverage"} else {"static"},
         "cpu_only":o.cpu_only,"gpu":gpu.as_ref().map(Gpu::capabilities),"runs":runs,
         "scope":"Independent client with JSON-owned immutable state, custom materials and analytic forms; no lab fixture imported.",
         "limits":["CPU includes snapshot and composition; GPU submit/wait is not a GPU timestamp or display FPS",
+            "R14 updates are timed separately; CPU total adds update, snapshot and composition. Initial preflight/catch-up is outside frame timers",
+            "Every effective transaction conservatively invalidates all glyph history; continuous updates reduce hysteresis reuse",
             "Offscreen synchronized run, 12 warmup frames excluded; per-frame capture and disk pauses affect scheduling",
             "Coverage audit uses central rays only outside timers; use coverage_audit example for independent dense-reference comparisons",
             "CPU-only skips GPU, image capture and central-ray coverage audits; submit_wait_ms is null in JSON (zero CSV placeholder)",
@@ -335,6 +414,7 @@ fn headless(o: &Options, doc: &SceneDocument) -> Result<()> {
 struct App {
     o: Options,
     doc: SceneDocument,
+    playback: Option<Playback>,
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
     composer: Composer,
@@ -353,11 +433,18 @@ struct App {
     reload_message: String,
     window_intervals: Vec<f64>,
     window_cpu: Vec<f64>,
+    window_updates: Vec<f64>,
+    window_commit_updates: Vec<f64>,
+    window_total_cpu: Vec<f64>,
     window_submit: Vec<f64>,
     configuration_changes: u32,
 }
 impl App {
     fn new(o: Options, doc: SceneDocument) -> Result<Self> {
+        let mut playback = playback(&o, &doc)?;
+        if let Some(playback) = &mut playback {
+            playback.advance_to((o.time * TICKS_PER_SECOND as f32).floor() as u32)?;
+        }
         let (w, h, _, _) = o.profile.dimensions();
         let mut composer = Composer::with_threads(o.workers)?;
         composer.set_primary_sampling(o.sampling);
@@ -367,6 +454,7 @@ impl App {
             time: o.time,
             o,
             doc,
+            playback,
             window: None,
             gpu: None,
             keys: HashSet::new(),
@@ -382,17 +470,35 @@ impl App {
             reload_message: String::new(),
             window_intervals: Vec::new(),
             window_cpu: Vec::new(),
+            window_updates: Vec::new(),
+            window_commit_updates: Vec::new(),
+            window_total_cpu: Vec::new(),
             window_submit: Vec::new(),
             configuration_changes: 0,
         })
     }
     fn reload(&mut self) {
-        match SceneDocument::load(&self.o.scene) {
-            Ok(next) => {
+        let replacement = (|| -> Result<_> {
+            let next = SceneDocument::load(&self.o.scene)?;
+            let mut next_playback = playback(&self.o, &next)?;
+            let time = if next_playback.is_some() {
+                self.o.time
+            } else {
+                self.time
+            };
+            if let Some(playback) = &mut next_playback {
+                playback.advance_to((time * TICKS_PER_SECOND as f32).floor() as u32)?;
+            }
+            Ok((next, next_playback, time))
+        })();
+        match replacement {
+            Ok((next, next_playback, time)) => {
                 // Construct the complete replacement before publishing it. A
                 // failed load leaves document, camera, time and history intact.
                 let cam = next.camera(self.cam.mode);
                 self.doc = next;
+                self.playback = next_playback;
+                self.time = time;
                 self.cam = cam;
                 self.composer.reset();
                 self.configuration_changes += 1;
@@ -429,8 +535,15 @@ impl App {
             * dt
             * 2.;
         let (_, _, cols, rows) = self.o.profile.dimensions();
+        let update_start = Instant::now();
+        let commits = if let Some(playback) = &mut self.playback {
+            playback.advance_to((self.time * TICKS_PER_SECOND as f32).floor() as u32)?
+        } else {
+            0
+        };
+        let update_ms = update_start.elapsed().as_secs_f64() * 1000.;
         let cpu_start = Instant::now();
-        let snapshot = self.doc.snapshot(self.time);
+        let snapshot = snapshot(&self.doc, &self.playback, self.time);
         let cam = self.o.camera_at(self.cam, self.time - self.o.time);
         let (mut cells, _) = self.composer.compose(
             &snapshot,
@@ -448,9 +561,10 @@ impl App {
                 cols,
                 rows,
                 &format!(
-                    "MATERIAL ROOM | {} | {} | C sampling P path 1/2/3 view | {}",
+                    "MATERIAL ROOM | {} | {} | rev {} | C sampling P path 1/2/3 view | {}",
                     self.cam.mode.name(),
                     self.o.sampling_name(),
+                    snapshot.revision().revision,
                     self.reload_message
                 ),
             );
@@ -464,6 +578,11 @@ impl App {
         if self.frames >= 12 {
             self.window_intervals.push(elapsed.as_secs_f64() * 1000.);
             self.window_cpu.push(cpu_ms);
+            self.window_updates.push(update_ms);
+            self.window_total_cpu.push(update_ms + cpu_ms);
+            if commits > 0 {
+                self.window_commit_updates.push(update_ms);
+            }
             self.window_submit.push(submit_ms);
         }
         self.frames += 1;
@@ -474,14 +593,20 @@ impl App {
         let (w, h, cols, rows) = self.o.profile.dimensions();
         let report = json!({
             "scene_path":self.o.scene,"input_scene":self.doc.source(),"camera":self.cam.mode.name(),
+            "updates_path":self.o.updates,"input_updates":self.playback.as_ref().map(Playback::source),
+            "final_dynamic_state":update_state(&self.playback),
             "primary_sampling":self.o.sampling_name(),"camera_path":if self.o.coverage_path {"coverage"} else {"static"},
             "workers":self.o.workers,"grid":[cols,rows],"requested_output":[w,h],"actual_output":self.size,
             "gpu":self.gpu.as_ref().map(Gpu::capabilities),"frames":self.frames,"warmup_frames_excluded":12,
             "configuration_changes":self.configuration_changes,"wall_seconds":self.start.elapsed().as_secs_f64(),
             "frame_interval_ms":distribution(&self.window_intervals),"cpu_snapshot_and_compose_ms":distribution(&self.window_cpu),
+            "update_ms":distribution(&self.window_updates),"commit_frame_update_ms":distribution(&self.window_commit_updates),
+            "cpu_update_snapshot_and_compose_ms":distribution(&self.window_total_cpu),
             "acquire_submit_present_ms":distribution(&self.window_submit),
             "raw_frame_interval_ms":self.window_intervals,"raw_cpu_ms":self.window_cpu,"raw_submit_ms":self.window_submit,
+            "raw_update_ms":self.window_updates,"raw_total_cpu_ms":self.window_total_cpu,
             "limits":["Real window callbacks and FIFO presentation on one host; intervals include scheduling and prior frame work",
+                "R14 update events are applied before snapshot; effective commits invalidate all glyph history. Update and composition timers are separate",
                 "Acquire/submit/present is CPU wall time, not GPU timestamps or scanout timing",
                 "Simulation dt is clamped at 100ms; warmup excludes first 12 frames; interactive changes are counted"]
         });
@@ -623,12 +748,19 @@ fn main() -> Result<()> {
     let options = Options::read()?;
     let doc = SceneDocument::load(&options.scene)?;
     if options.validate {
+        let updates = playback(&options, &doc)?;
         println!(
             "Valid v{} scene: {} ({} objects)",
             doc.version(),
             doc.name(),
             doc.object_count()
         );
+        if let Some(updates) = updates {
+            println!(
+                "Complete update sequence preflight passed: {} events",
+                updates.source()["events"].as_array().map_or(0, Vec::len)
+            );
+        }
         return Ok(());
     }
     if options.headless {
@@ -649,6 +781,82 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
     use ascii_material_room::DEFAULT_SCENE_JSON;
+    #[test]
+    fn dynamic_reload_preserves_everything_on_invalid_future_event_and_restarts_on_success() {
+        let prefix =
+            std::env::temp_dir().join(format!("ascii-room-r14-reload-{}", std::process::id()));
+        let scene_path = prefix.with_extension("scene.json");
+        let updates_path = prefix.with_extension("updates.json");
+        let source: Value =
+            serde_json::from_str(ascii_material_room::DEFAULT_SCENE_V2_JSON).unwrap();
+        std::fs::write(&scene_path, source.to_string()).unwrap();
+        std::fs::write(
+            &updates_path,
+            json!({"version":1,"events":[{"tick":30,"operations":[{"op":"remove","id":2}]}]})
+                .to_string(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty(), 1).unwrap();
+        options.scene = scene_path.clone();
+        options.updates = Some(updates_path.clone());
+        let doc = SceneDocument::load(&scene_path).unwrap();
+        let mut app = App::new(options, doc).unwrap();
+        app.time = 2.;
+        app.cam.offset = Vec3::new(0.1, 0.2, 0.3);
+        app.playback.as_mut().unwrap().advance_to(60).unwrap();
+        let before_state = update_state(&app.playback);
+        let before_pose = app.cam.pose();
+        let before = snapshot(&app.doc, &app.playback, app.time);
+        let epoch = before.history_epoch();
+        app.composer
+            .compose(&before, app.cam, app.time, Stage::Light, 40, 23, 16. / 9.);
+        let mut changed = source.clone();
+        changed["name"] = json!("Valid new scene with invalid update plan");
+        std::fs::write(&scene_path, changed.to_string()).unwrap();
+        std::fs::write(
+            &updates_path,
+            json!({"version":1,"events":[{"tick":99,"operations":[{"op":"remove","id":999}]}]})
+                .to_string(),
+        )
+        .unwrap();
+        app.reload();
+        assert_eq!(app.doc.source(), &source);
+        assert_eq!(app.time, 2.);
+        assert_eq!(app.cam.pose(), before_pose);
+        assert_eq!(update_state(&app.playback), before_state);
+        let unchanged = snapshot(&app.doc, &app.playback, app.time);
+        assert_eq!(unchanged.history_epoch(), epoch);
+        let (_, stats) = app.composer.compose(
+            &unchanged,
+            app.cam,
+            app.time,
+            Stage::Light,
+            40,
+            23,
+            16. / 9.,
+        );
+        assert!(stats.matched > 0, "failed reload must retain history");
+        for invalid in ["", "  ", "{", "{\"events\":["] {
+            std::fs::write(&updates_path, invalid).unwrap();
+            app.reload();
+            assert_eq!(update_state(&app.playback), before_state);
+            assert_eq!(app.time, 2.);
+            assert_eq!(app.doc.source(), &source);
+        }
+        std::fs::write(&updates_path, r#"{"version":1,"events":[]}"#).unwrap();
+        app.reload();
+        assert_eq!(app.doc.source(), &changed);
+        assert_eq!(app.time, app.o.time);
+        let replaced = snapshot(&app.doc, &app.playback, app.time);
+        assert_ne!(replaced.history_epoch(), epoch);
+        assert!(app.playback.as_ref().unwrap().state().handle(2).is_some());
+        let (_, stats) =
+            app.composer
+                .compose(&replaced, app.cam, app.time, Stage::Light, 40, 23, 16. / 9.);
+        assert_eq!(stats.matched, 0);
+        std::fs::remove_file(scene_path).unwrap();
+        std::fs::remove_file(updates_path).unwrap();
+    }
     #[test]
     fn independent_scene_workers_history_and_snapshot_state_agree() {
         let doc = SceneDocument::from_json(DEFAULT_SCENE_JSON).unwrap();

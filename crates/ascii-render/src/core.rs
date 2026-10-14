@@ -109,6 +109,20 @@ pub struct EnvironmentSample {
 /// Implementations used by Composer must be Sync and give deterministic answers
 /// for one tick/stage. Update simulation before composing, never inside a query.
 pub trait Scene {
+    /// Identity of the immutable snapshot's glyph-history domain. Composer
+    /// reads this once per frame and discards all previous history on a change,
+    /// including transitions to zero or back to an older snapshot's token.
+    /// An event that changes occupancy or authored content can also affect
+    /// unchanged receivers through shadows/reflections, so invalidation is global.
+    ///
+    /// Keep the token stable across ordinary ticks of the same history domain.
+    /// Distinct domains/revisions must not share a token unless the caller resets
+    /// Composer explicitly; do not wrap/reuse tokens for new revisions. Zero is
+    /// the legacy default, not an exemption from change detection. This hook
+    /// does not replace the requirement that every query use one frozen snapshot.
+    fn history_epoch(&self) -> u64 {
+        0
+    }
     fn trace(&self, ray: Ray, time: f32, stage: Stage, include_water: bool) -> Option<Hit>;
     /// Legacy shadow semantics: query the nearest non-water surface, then test
     /// its distance and material. A nearest EMISSIVE surface returns false even

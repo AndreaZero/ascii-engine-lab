@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "name": "Dynamic occupancy room — one state for primary, shadow and environment queries",
+  "cameras": {
+    "first": { "eye": [0.0, 2.8, 7.0], "target": [0.0, 0.9, -0.6], "fov_y_degrees": 55.0, "ortho_half_height": 4.4 },
+    "third": { "eye": [6.5, 4.5, 7.5], "target": [0.0, 0.9, -0.6], "fov_y_degrees": 53.0, "ortho_half_height": 4.4 },
+    "overhead": { "eye": [5.5, 9.5, 6.5], "target": [0.0, 0.5, -0.6], "fov_y_degrees": 53.0, "ortho_half_height": 4.4 }
+  },
+  "environment": { "diffuse_irradiance": [0.6, 0.6, 0.6], "specular_radiance": [0.18, 0.22, 0.3], "max_distance": 12.0 },
+  "materials": [
+    { "id": 32, "name": "Diffuse receiver", "pigment": [0.48, 0.51, 0.54], "pattern": { "kind": "plain", "scale": 1.0, "palette": "." }, "surface": { "roughness": 0.8, "f0": 0.04, "occlusion": 1.0 } },
+    { "id": 33, "name": "Blue occupancy panel", "pigment": [0.12, 0.38, 0.68], "pattern": { "kind": "plain", "scale": 1.0, "palette": "D" }, "surface": { "roughness": 0.65, "f0": 0.04, "occlusion": 1.0 } },
+    { "id": 34, "name": "Red local reflection target", "pigment": [0.85, 0.06, 0.04], "pattern": { "kind": "plain", "scale": 1.0, "palette": "R" }, "surface": { "roughness": 0.65, "f0": 0.04, "occlusion": 1.0 } },
+    { "id": 35, "name": "Bounded conductor reflector", "pigment": [0.2, 0.2, 0.2], "pattern": { "kind": "plain", "scale": 1.0, "palette": "M" }, "surface": { "roughness": 0.18, "f0": 0.04, "occlusion": 1.0, "metallic": { "f0": [0.72, 0.72, 0.72], "metalness": 1.0 } } },
+    { "id": 36, "name": "Static supports", "pigment": [0.48, 0.38, 0.23], "pattern": { "kind": "plain", "scale": 1.0, "palette": "P" }, "surface": { "roughness": 0.8, "f0": 0.04, "occlusion": 1.0 } },
+    { "id": 37, "name": "Inserted blocker", "pigment": [0.22, 0.65, 0.28], "pattern": { "kind": "plain", "scale": 1.0, "palette": "B" }, "surface": { "roughness": 0.7, "f0": 0.04, "occlusion": 1.0 } }
+  ],
+  "objects": [
+    { "id": 1, "name": "Receiver floor", "shape": "box", "material": 32, "position": [0.0, -0.12, -0.5], "half_extents": [5.0, 0.12, 4.5] },
+    { "id": 2, "name": "Horizontal conductor plate", "shape": "box", "material": 35, "position": [-1.5, 0.045, -0.4], "half_extents": [1.0, 0.045, 1.2] },
+    { "id": 3, "name": "Opening and removable panel", "shape": "box", "material": 33, "position": [0.8, 1.25, -1.7], "half_extents": [1.0, 1.25, 0.12], "rotation_y": 0.0 },
+    { "id": 4, "name": "Moving red reflection target", "shape": "box", "material": 34, "position": [-1.5, 1.15, -2.6], "half_extents": [0.65, 0.95, 0.45] },
+    { "id": 5, "name": "Left static pier", "shape": "box", "material": 36, "position": [-3.2, 1.2, -2.5], "half_extents": [0.25, 1.2, 0.3] },
+    { "id": 6, "name": "Right static pier", "shape": "box", "material": 36, "position": [2.6, 1.2, -2.5], "half_extents": [0.25, 1.2, 0.3] },
+    { "id": 7, "name": "Low background receiver", "shape": "box", "material": 32, "position": [0.0, 0.65, -4.2], "half_extents": [4.0, 0.65, 0.15] }
+  ],
+  "light": { "position": [-3.0, 5.0, 3.0], "color": [0.95, 0.9, 0.8] }
+}

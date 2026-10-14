@@ -29,6 +29,8 @@ R12 adds [optional primary geometry coverage](GEOMETRY_COVERAGE.md): nine semant
 
 R13 verifies an [exact distance-limited box helper](QUERY_ACCELERATION.md) and measures its integration in Material Room. The candidate reduces slab work but increases CPU cost, so ordinary client traversal remains R12. The helper and explicitly bounded diagnostics remain available; no runtime speedup or spatial hierarchy is claimed.
 
+R14 adds [dynamic occupancy and snapshot identities](DYNAMIC_OCCUPANCY.md): the independent client applies atomic insert/remove/transform transactions, preserves old snapshots and survivor handles, and gives a recreated ID a new lifetime. A small optional history epoch invalidates glyph reuse on effective commits, including shadow/reflection receivers. Run `Avvia-occupazione.cmd` or use the [client API and event-file guide](clients/material-room/README.md#occupazione-dinamica-r14). This is bounded scene updating, with explicit publication cost and global history resets; physics, spatial acceleration and production performance remain separate work.
+
 [Quick start](#getting-started) · [How it renders](#rendering-approach) · [Captures and benchmarks](#captures-and-measurements) · [Contributing](#contributing) · [Report an issue](https://github.com/AndreaZero/ascii-engine-lab/issues)
 
 ## Rendering approach

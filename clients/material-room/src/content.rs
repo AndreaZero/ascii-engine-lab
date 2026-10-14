@@ -1162,7 +1162,7 @@ fn parse_motion(value: &Value, path: &str, allow_yaw: bool) -> Result<(Translati
 // serde_json::Value overwrites repeated object keys. A second bounded lexical
 // walk rejects them (including escaped aliases) without adding a serde derive
 // dependency. Grammar/escapes have already been validated by serde_json above.
-fn reject_duplicate_keys(text: &str) -> Result<(), String> {
+pub(crate) fn reject_duplicate_keys(text: &str) -> Result<(), String> {
     fn whitespace(bytes: &[u8], at: &mut usize) {
         while bytes.get(*at).is_some_and(u8::is_ascii_whitespace) {
             *at += 1;

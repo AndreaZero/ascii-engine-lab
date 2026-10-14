@@ -64,16 +64,29 @@ for the existing f32 primitive solvers. A spatial hierarchy remains future work
 requiring explicit numerical semantics and evidence, not a capability delivered
 by these changes. The first unsuccessful pilot and host contention are retained.
 
-Next bounded capability: dynamic occupancy lifetime in client-owned immutable
-snapshots, with stable identities and consistent primary/shadow/reflection state.
-Continue reporting cost at fixed density; do not substitute another material
-showcase, hide coverage loss or promise realtime performance. No new writer is
-assigned automatically by this document.
+[R14](DYNAMIC_OCCUPANCY.md) closes the bounded dynamic-occupancy lifetime gate
+for Material Room: atomic insertion/removal/absolute transforms, stable survivor
+handles, a new generation when an ID is reused, and immutable retained snapshots.
+An optional core history epoch resets all glyph history on effective commits,
+including indirect receivers. Independent reconstruction verifies primary,
+shadow, diffuse and local-reflection state. This is not physics, fracture,
+selective history invalidation or a faster spatial index. Publication currently
+clones and validates a bounded document at each event; its cost is reported
+separately and included in total CPU cost. General geometry/motion/cost stays open.
+
+Next bounded work should address practical creation and portability for this
+supported subset: create, preview, reload, save and reopen a scene/update sequence
+without core edits, then package and verify it on another physical machine.
+Define the usable subset and its exit evidence before implementation; a complete
+editor is not required. Another machine remains an external validation gap, not
+something a clean checkout or fewer workers can emulate. Continue measuring at
+fixed density and preserve the failed R13 acceleration result. No new writer or
+future tranche is assigned automatically by this document.
 
 | Gate | Engineering work | Evidence needed to close it |
 | --- | --- | --- |
 | Geometry coverage and motion | R12 opt-in primary sampling and R13 exact bounded-helper experiment verified; runtime integration rejected for cost, linear traversal retained, sample gaps and foreground dilation remain | Preserve R11/R12 scene/path and tie semantics, dense-reference coverage, three-view motion and CPU/window pacing without hidden quality reductions |
-| Dynamic scene updates | A moving/opening/removable object changes real occupancy and identity | Primary visibility, shadows and reflections agree at the same tick; additions/removals leave no stale glyph history |
+| Dynamic scene updates — bounded gate closed in R14 | Client-owned atomic occupancy changes and lifetime handles; global history epoch | Independent query/cell reconstruction, retained snapshots, rollback/anti-ABA, three-view replay and separate update cost; no physics or selective invalidation implied |
 | Practical creation and portability | Preview/reload/save for the supported content subset; useful controls rather than a full editor | A new scene can be created and reopened without core edits; documented package and execution on another physical machine |
 | V1 for a declared BLACKWATER subset | Fix supported scenes, actors, effects, distances, quality and hardware budget | A client supplies its state through documented APIs and the complete agreed workload passes; gameplay integration needs its own authorized task |
 
