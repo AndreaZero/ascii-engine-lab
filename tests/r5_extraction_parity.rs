@@ -32,6 +32,7 @@ fn extracted_renderer_preserves_r5_cells_and_history() {
                             orbit: old.orbit,
                             zoom: old.zoom,
                             offset: old.offset,
+                            view: None,
                         };
                         let scene = LabScene::snapshot(time, stage);
                         let (a, sa) =

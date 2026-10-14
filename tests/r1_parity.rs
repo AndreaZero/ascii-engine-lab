@@ -58,6 +58,7 @@ fn current_compositor_preserves_r1_bytes_and_history_on_legacy_content() {
                         orbit: old_camera.orbit,
                         offset: old_camera.offset,
                         zoom: old_camera.zoom,
+                        view: None,
                     };
                     let (old, old_stats) =
                         reference.compose(&LabScene, old_camera, time, stage, 41, 25, 16. / 9.);

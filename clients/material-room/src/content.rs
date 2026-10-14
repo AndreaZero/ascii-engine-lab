@@ -1,8 +1,16 @@
-//! Version 1 content: bounded analytic objects and object-attached glyph patterns.
+//! Versioned content: bounded analytic objects and object-attached glyph patterns.
+//! V1 keeps the R6 appearance. V2 adds client cameras, uniform local surfaces and
+//! an optional constant authored environment; it is not an image/HDR importer.
 //! Distances are world units; rotation, phase and yaw amplitudes are radians;
 //! motion speed is radians/second. Ellipsoid half_extents are its three radii.
 //! A snapshot requires finite time and owns immutable prepared transforms.
-use ascii_render::core::{intersect_box, intersect_ellipsoid, Hit, Ray, Scene, Stage};
+use ascii_render::{
+    camera::{Camera, CameraView, Mode},
+    core::{
+        intersect_box, intersect_ellipsoid, EnvironmentQuery, EnvironmentSample, Hit,
+        MaterialSample, MetallicSample, Ray, Scene, Stage,
+    },
+};
 use glam::{Quat, Vec3};
 use serde_json::{Map, Value};
 use std::{
@@ -31,6 +39,15 @@ struct Material {
     kind: PatternKind,
     scale: f32,
     palette: Vec<u8>,
+    surface: Option<Surface>,
+}
+
+#[derive(Clone, Copy)]
+struct Surface {
+    roughness: f32,
+    f0: f32,
+    occlusion: f32,
+    metallic: Option<MetallicSample>,
 }
 impl Material {
     // The index describes authored structure, never the current brightness.
@@ -82,6 +99,43 @@ impl Material {
     fn glyph(&self, local: Vec3) -> u8 {
         self.palette[self.region(local) % self.palette.len()]
     }
+
+    // V2 filters the existing pattern vocabulary, not the object's geometry or
+    // color. Fine seams need at least two cell widths; broader bands survive
+    // one more level, then collapse to a uniform authored palette entry.
+    // Both glyph and history key MUST use this same classification, including
+    // LOD even when the author repeats characters in the palette.
+    fn filtered_region(&self, local: Vec3, footprint: f32) -> (usize, u32) {
+        if matches!(self.kind, PatternKind::Plain) {
+            return (0, 1);
+        }
+        let width = if footprint.is_finite() {
+            footprint.max(0.0) * self.scale
+        } else {
+            f32::INFINITY
+        };
+        let fine_limit = match self.kind {
+            PatternKind::Stone => 0.04,
+            PatternKind::Wood => 0.05,
+            PatternKind::Cloth => 0.03,
+            PatternKind::Plain => unreachable!(),
+        };
+        let (region, lod) = if width <= fine_limit {
+            (self.region(local), 0)
+        } else if width <= 0.20 {
+            let p = local * self.scale;
+            let phase = match self.kind {
+                PatternKind::Stone => p.x + p.z * 0.35,
+                PatternKind::Wood => p.x + (p.y * 0.65).sin() * 0.17 + (p.z * 0.8).sin() * 0.12,
+                PatternKind::Cloth => p.x + (p.y * 0.4).sin() * 0.14,
+                PatternKind::Plain => unreachable!(),
+            };
+            (if phase.rem_euclid(1.0) < 0.5 { 2 } else { 3 }, 1)
+        } else {
+            (3, 2)
+        };
+        (region, ((lod as u32) << 8) | (region as u32 + 1))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -132,11 +186,15 @@ struct Object {
 
 struct DocumentData {
     source: Value,
+    version: u64,
     name: String,
     materials: BTreeMap<u32, Material>,
     objects: Vec<Object>,
     light_position: Vec3,
     light_translation: Translation,
+    light_color: Vec3,
+    cameras: Option<[CameraView; 3]>,
+    environment: Option<EnvironmentSample>,
 }
 
 /// Validated, shareable content, independent of render/window state.
@@ -152,15 +210,28 @@ impl SceneDocument {
         let value: Value =
             serde_json::from_str(text).map_err(|e| format!("$: invalid JSON: {e}"))?;
         reject_duplicate_keys(text)?;
-        let root = fields(
+        let root = value.as_object().ok_or("$: expected object")?;
+        let version = required(root, "version", "$")?
+            .as_u64()
+            .filter(|version| matches!(version, 1 | 2))
+            .ok_or("$.version: expected supported integer version 1 or 2")?;
+        fields(
             &value,
             "$",
-            &["version", "name", "materials", "objects", "light"],
+            if version == 1 {
+                &["version", "name", "materials", "objects", "light"]
+            } else {
+                &[
+                    "version",
+                    "name",
+                    "materials",
+                    "objects",
+                    "light",
+                    "cameras",
+                    "environment",
+                ]
+            },
         )?;
-        let version = required(root, "version", "$")?;
-        if version.as_u64() != Some(1) {
-            return Err("$.version: expected supported integer version 1".into());
-        }
         let document_name = name(required(root, "name", "$")?, "$.name")?;
         let material_values = array(
             required(root, "materials", "$")?,
@@ -170,7 +241,15 @@ impl SceneDocument {
         let mut materials = BTreeMap::new();
         for (i, value) in material_values.iter().enumerate() {
             let path = format!("$.materials[{i}]");
-            let map = fields(value, &path, &["id", "name", "pigment", "pattern"])?;
+            let map = fields(
+                value,
+                &path,
+                if version == 1 {
+                    &["id", "name", "pigment", "pattern"]
+                } else {
+                    &["id", "name", "pigment", "pattern", "surface"]
+                },
+            )?;
             let id = id(required(map, "id", &path)?, &format!("{path}.id"), 32)?;
             name(required(map, "name", &path)?, &format!("{path}.name"))?;
             let pigment = vector(
@@ -219,6 +298,14 @@ impl SceneDocument {
                     "{pattern_path}.palette: expected 1..16 printable ASCII bytes (32..126)"
                 ));
             }
+            let surface = if version == 2 {
+                Some(parse_surface(
+                    required(map, "surface", &path)?,
+                    &format!("{path}.surface"),
+                )?)
+            } else {
+                None
+            };
             if materials
                 .insert(
                     id,
@@ -227,6 +314,7 @@ impl SceneDocument {
                         kind,
                         scale,
                         palette,
+                        surface,
                     },
                 )
                 .is_some()
@@ -298,10 +386,20 @@ impl SceneDocument {
             });
         }
 
+        // Stable explicit identity also defines equal-distance query priority.
+        // V1 retains its authored array order for exact R6 compatibility.
+        if version == 2 {
+            objects.sort_by_key(|object| object.id);
+        }
+
         let light = fields(
             required(root, "light", "$")?,
             "$.light",
-            &["position", "motion"],
+            if version == 1 {
+                &["position", "motion"]
+            } else {
+                &["position", "motion", "color"]
+            },
         )?;
         let light_position = vector(
             required(light, "position", "$.light")?,
@@ -314,14 +412,32 @@ impl SceneDocument {
         } else {
             Translation::default()
         };
+        let light_color = light
+            .get("color")
+            .map_or(Ok(Vec3::new(1.0, 0.58, 0.23)), |value| {
+                vector(value, "$.light.color", 0.0, 16.0)
+            })?;
+        let cameras = if version == 2 {
+            Some(parse_cameras(required(root, "cameras", "$")?)?)
+        } else {
+            None
+        };
+        let environment = root
+            .get("environment")
+            .map(|value| parse_environment(value, "$.environment"))
+            .transpose()?;
         Ok(Self {
             data: Arc::new(DocumentData {
                 source: value,
+                version,
                 name: document_name,
                 materials,
                 objects,
                 light_position,
                 light_translation,
+                light_color,
+                cameras,
+                environment,
             }),
         })
     }
@@ -342,6 +458,33 @@ impl SceneDocument {
 
     pub fn name(&self) -> &str {
         &self.data.name
+    }
+    pub fn version(&self) -> u64 {
+        self.data.version
+    }
+
+    /// Fresh client-owned camera state for this document and selected view.
+    /// V1 presets reproduce the original Material Room CLI/window camera.
+    pub fn camera(&self, mode: Mode) -> Camera {
+        if let Some(views) = &self.data.cameras {
+            let index = match mode {
+                Mode::First => 0,
+                Mode::Third => 1,
+                Mode::Overhead => 2,
+            };
+            Camera::with_view(mode, views[index])
+        } else {
+            let mut camera = Camera::new(mode);
+            match mode {
+                Mode::First => {
+                    camera.offset = Vec3::new(-1.0, 0.0, 1.4);
+                    camera.orbit = -0.194;
+                }
+                Mode::Third => camera.zoom = 0.85,
+                Mode::Overhead => {}
+            }
+            camera
+        }
     }
     /// The exact validated JSON value used to construct this document.
     pub fn source(&self) -> &Value {
@@ -480,6 +623,52 @@ impl Scene for Snapshot {
             .get(&material)
             .map_or(Vec3::ZERO, |m| m.pigment)
     }
+    fn local_materials(&self) -> bool {
+        self.data.version == 2
+    }
+    fn material_sample(&self, hit: Hit, _footprint: f32) -> Option<MaterialSample> {
+        let material = self.data.materials.get(&hit.material)?;
+        let surface = material.surface?;
+        Some(MaterialSample {
+            albedo: material.pigment,
+            normal: hit.normal,
+            roughness: surface.roughness,
+            f0: surface.f0,
+            occlusion: surface.occlusion,
+        })
+    }
+    fn metallic_sample(&self, hit: Hit, _footprint: f32) -> Option<MetallicSample> {
+        self.data.materials.get(&hit.material)?.surface?.metallic
+    }
+    fn environment_sample(&self, _query: EnvironmentQuery) -> Option<EnvironmentSample> {
+        self.data.environment
+    }
+    fn light_color(&self) -> Vec3 {
+        self.data.light_color
+    }
+    fn glyph_sample(&self, hit: Hit, illumination: f32, footprint: f32) -> u8 {
+        if self.data.version == 1 {
+            return self.glyph(hit.material, hit.local, hit.normal, illumination);
+        }
+        self.data
+            .materials
+            .get(&hit.material)
+            .map_or(b' ', |material| {
+                let (region, _) = material.filtered_region(hit.local, footprint);
+                material.palette[region % material.palette.len()]
+            })
+    }
+    fn glyph_sample_key(&self, hit: Hit, footprint: f32) -> u32 {
+        if self.data.version == 1 {
+            return self.glyph_history_key(hit.material, hit.local, hit.normal);
+        }
+        self.data
+            .materials
+            .get(&hit.material)
+            .map_or(0, |material| {
+                material.filtered_region(hit.local, footprint).1
+            })
+    }
     fn glyph(&self, material: u32, local: Vec3, _normal: Vec3, _illumination: f32) -> u8 {
         // Lighting remains the renderer's responsibility. Structural choices
         // stay attached to the moving object and are independent of brightness.
@@ -494,6 +683,108 @@ impl Scene for Snapshot {
             .get(&material)
             .map_or(0, |m| m.region(local) as u32 + 1)
     }
+}
+
+fn parse_surface(value: &Value, path: &str) -> Result<Surface, String> {
+    let map = fields(value, path, &["roughness", "f0", "occlusion", "metallic"])?;
+    let scalar = |key| {
+        number(
+            required(map, key, path)?,
+            &format!("{path}.{key}"),
+            0.0,
+            1.0,
+        )
+    };
+    let metallic = map
+        .get("metallic")
+        .map(|value| {
+            let path = format!("{path}.metallic");
+            let map = fields(value, &path, &["f0", "metalness"])?;
+            Ok::<_, String>(MetallicSample {
+                f0: vector(required(map, "f0", &path)?, &format!("{path}.f0"), 0.0, 1.0)?,
+                metalness: number(
+                    required(map, "metalness", &path)?,
+                    &format!("{path}.metalness"),
+                    0.0,
+                    1.0,
+                )?,
+            })
+        })
+        .transpose()?;
+    Ok(Surface {
+        roughness: scalar("roughness")?,
+        f0: scalar("f0")?,
+        occlusion: scalar("occlusion")?,
+        metallic,
+    })
+}
+
+fn parse_cameras(value: &Value) -> Result<[CameraView; 3], String> {
+    let map = fields(value, "$.cameras", &["first", "third", "overhead"])?;
+    let parse = |key| {
+        let path = format!("$.cameras.{key}");
+        let view = fields(
+            required(map, key, "$.cameras")?,
+            &path,
+            &["eye", "target", "fov_y_degrees", "ortho_half_height"],
+        )?;
+        CameraView::new(
+            vector(
+                required(view, "eye", &path)?,
+                &format!("{path}.eye"),
+                -10000.0,
+                10000.0,
+            )?,
+            vector(
+                required(view, "target", &path)?,
+                &format!("{path}.target"),
+                -10000.0,
+                10000.0,
+            )?,
+            number(
+                required(view, "fov_y_degrees", &path)?,
+                &format!("{path}.fov_y_degrees"),
+                1.0,
+                179.0,
+            )?,
+            number(
+                required(view, "ortho_half_height", &path)?,
+                &format!("{path}.ortho_half_height"),
+                0.01,
+                10000.0,
+            )?,
+        )
+        .map_err(|error| format!("{path}: {error}"))
+    };
+    Ok([parse("first")?, parse("third")?, parse("overhead")?])
+}
+
+fn parse_environment(value: &Value, path: &str) -> Result<EnvironmentSample, String> {
+    let map = fields(
+        value,
+        path,
+        &["diffuse_irradiance", "specular_radiance", "max_distance"],
+    )?;
+    Ok(EnvironmentSample {
+        diffuse_irradiance: vector(
+            required(map, "diffuse_irradiance", path)?,
+            &format!("{path}.diffuse_irradiance"),
+            0.0,
+            16.0,
+        )?,
+        specular_radiance: vector(
+            required(map, "specular_radiance", path)?,
+            &format!("{path}.specular_radiance"),
+            0.0,
+            16.0,
+        )?,
+        max_distance: number(
+            required(map, "max_distance", path)?,
+            &format!("{path}.max_distance"),
+            0.0,
+            100.0,
+        )?,
+    })
 }
 
 fn fields<'a>(
@@ -732,6 +1023,14 @@ mod tests {
             {"id":1,"name":"Block","shape":"box","material":32,"position":[0,1,0],"half_extents":[0.5,1,0.25]}
         ],"light":{"position":[0,4,2]}})
     }
+    fn fixture_v2() -> Value {
+        let mut value = fixture();
+        value["version"] = json!(2);
+        value["materials"][0]["surface"] = json!({"roughness":0.6,"f0":0.04,"occlusion":0.8});
+        let view = json!({"eye":[0,2,5],"target":[0,1,0],"fov_y_degrees":60,"ortho_half_height":4});
+        value["cameras"] = json!({"first":view,"third":view,"overhead":view});
+        value
+    }
     fn load_value(value: &Value) -> Result<SceneDocument, String> {
         SceneDocument::from_json(&value.to_string())
     }
@@ -764,7 +1063,7 @@ mod tests {
     #[test]
     fn rejects_schema_errors_with_field_paths() {
         let mut v = fixture();
-        v["version"] = json!(2);
+        v["version"] = json!(3);
         rejected(v, "$.version");
         let mut v = fixture();
         v["surprise"] = json!(true);
@@ -824,6 +1123,332 @@ mod tests {
         let error = SceneDocument::from_json(duplicate).err().unwrap();
         assert!(error.contains("$.version: duplicate field"));
         assert!(SceneDocument::from_json("{bad json}").is_err());
+    }
+
+    #[test]
+    fn v1_rejects_new_fields_and_retains_client_camera_presets() {
+        let document = load_value(&fixture()).unwrap();
+        assert_eq!(document.version(), 1);
+        for mode in [Mode::First, Mode::Third, Mode::Overhead] {
+            let mut old = Camera::new(mode);
+            match mode {
+                Mode::First => {
+                    old.offset = Vec3::new(-1.0, 0.0, 1.4);
+                    old.orbit = -0.194;
+                }
+                Mode::Third => old.zoom = 0.85,
+                Mode::Overhead => {}
+            }
+            let restored = document.camera(mode);
+            assert_eq!(restored.pose(), old.pose());
+            for (x, y) in [(0, 0), (7, 13), (30, 18)] {
+                let a = restored.ray(x, y, 31, 19, 16.0 / 9.0);
+                let b = old.ray(x, y, 31, 19, 16.0 / 9.0);
+                assert_eq!(a.origin, b.origin);
+                assert_eq!(a.dir, b.dir);
+            }
+        }
+        for key in ["cameras", "environment"] {
+            let mut value = fixture();
+            value[key] = json!({});
+            rejected(value, &format!("$.{key}"));
+        }
+        let mut value = fixture();
+        value["materials"][0]["surface"] = json!({});
+        rejected(value, "$.materials[0].surface");
+        let mut value = fixture();
+        value["light"]["color"] = json!([1, 1, 1]);
+        rejected(value, "$.light.color");
+    }
+
+    #[test]
+    fn v2_rejects_missing_unknown_and_out_of_range_fields() {
+        let valid = fixture_v2();
+        assert!(load_value(&valid).is_ok());
+        for path in [
+            "/cameras",
+            "/cameras/first",
+            "/cameras/third/eye",
+            "/cameras/overhead/fov_y_degrees",
+            "/materials/0/surface",
+        ] {
+            let mut value = valid.clone();
+            let (parent, key) = path.rsplit_once('/').unwrap();
+            value
+                .pointer_mut(parent)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+            assert!(load_value(&value).is_err(), "missing {path}");
+        }
+        for key in ["roughness", "f0", "occlusion"] {
+            for invalid in [
+                json!(-0.001),
+                json!(1.0000000001),
+                Value::Null,
+                json!("0.5"),
+            ] {
+                let mut value = valid.clone();
+                value["materials"][0]["surface"][key] = invalid;
+                rejected(value, &format!("$.materials[0].surface.{key}"));
+            }
+        }
+        for (pointer, invalid, path) in [
+            (
+                "/cameras/first/eye/0",
+                json!(10000.0001),
+                "$.cameras.first.eye[0]",
+            ),
+            (
+                "/cameras/first/target/0",
+                json!(-10001),
+                "$.cameras.first.target[0]",
+            ),
+            (
+                "/cameras/third/fov_y_degrees",
+                json!(179.1),
+                "$.cameras.third.fov_y_degrees",
+            ),
+            (
+                "/cameras/third/fov_y_degrees",
+                json!(0.99),
+                "$.cameras.third.fov_y_degrees",
+            ),
+            (
+                "/cameras/overhead/ortho_half_height",
+                json!(0),
+                "$.cameras.overhead.ortho_half_height",
+            ),
+            (
+                "/cameras/overhead/ortho_half_height",
+                json!(10001),
+                "$.cameras.overhead.ortho_half_height",
+            ),
+        ] {
+            let mut value = valid.clone();
+            *value.pointer_mut(pointer).unwrap() = invalid;
+            rejected(value, path);
+        }
+        let mut value = valid.clone();
+        value["cameras"]["first"]["target"] = value["cameras"]["first"]["eye"].clone();
+        rejected(value, "$.cameras.first");
+        let mut value = valid.clone();
+        value["cameras"]["third"]["target"] = json!([0, 3, 5]);
+        rejected(value, "$.cameras.third");
+        for (pointer, path) in [
+            ("/cameras", "$.cameras.surprise"),
+            ("/cameras/first", "$.cameras.first.surprise"),
+            ("/materials/0/surface", "$.materials[0].surface.surprise"),
+        ] {
+            let mut value = valid.clone();
+            value.pointer_mut(pointer).unwrap()["surprise"] = json!(0);
+            rejected(value, path);
+        }
+        let mut value = valid;
+        value["materials"][0]["surface"]["metallic"] = json!({"f0":[0.5,1.01,0.5],"metalness":1});
+        rejected(value, "$.materials[0].surface.metallic.f0[1]");
+        let duplicate = fixture_v2().to_string().replace(
+            "\"roughness\":0.6",
+            "\"roughness\":0.6,\"\\u0072oughness\":0.5",
+        );
+        assert!(SceneDocument::from_json(&duplicate)
+            .err()
+            .unwrap()
+            .contains("$.materials[0].surface.roughness: duplicate field"));
+    }
+
+    #[test]
+    fn v2_exposes_authored_surface_conductor_light_and_constant_environment() {
+        let mut value = fixture_v2();
+        value["materials"][0]["surface"]["metallic"] = json!({"f0":[0.6,0.7,0.8],"metalness":0.9});
+        value["environment"] = json!({"diffuse_irradiance":[0.2,0.3,0.4],"specular_radiance":[0.5,0.6,0.7],"max_distance":12});
+        value["light"]["color"] = json!([0.4, 0.6, 0.8]);
+        let document = load_value(&value).unwrap();
+        let snapshot = document.snapshot(0.0);
+        let hit = snapshot
+            .trace(
+                Ray {
+                    origin: Vec3::new(0.0, 1.0, 3.0),
+                    dir: -Vec3::Z,
+                },
+                0.0,
+                Stage::Light,
+                true,
+            )
+            .unwrap();
+        assert!(snapshot.local_materials());
+        let surface = snapshot.material_sample(hit, 0.1).unwrap();
+        assert_eq!(surface.albedo, Vec3::new(0.4, 0.3, 0.2));
+        assert_eq!(surface.normal, hit.normal);
+        assert_eq!(
+            (surface.roughness, surface.f0, surface.occlusion),
+            (0.6, 0.04, 0.8)
+        );
+        let metallic = snapshot.metallic_sample(hit, 0.1).unwrap();
+        assert_eq!(metallic.f0, Vec3::new(0.6, 0.7, 0.8));
+        assert_eq!(metallic.metalness, 0.9);
+        assert_eq!(snapshot.light_color(), Vec3::new(0.4, 0.6, 0.8));
+        for (normal, direction, roughness, time) in
+            [(Vec3::Y, Vec3::Z, 0.0, 0.0), (-Vec3::Y, -Vec3::Z, 1.0, 5.0)]
+        {
+            let sample = snapshot
+                .environment_sample(EnvironmentQuery {
+                    hit,
+                    normal,
+                    reflected_direction: direction,
+                    roughness,
+                    time,
+                    stage: Stage::Light,
+                })
+                .unwrap();
+            assert_eq!(sample.diffuse_irradiance, Vec3::new(0.2, 0.3, 0.4));
+            assert_eq!(sample.specular_radiance, Vec3::new(0.5, 0.6, 0.7));
+            assert_eq!(sample.max_distance, 12.0);
+        }
+        let legacy = load_value(&fixture()).unwrap().snapshot(0.0);
+        assert!(!legacy.local_materials());
+        assert!(legacy.material_sample(hit, 0.1).is_none());
+        assert!(legacy.metallic_sample(hit, 0.1).is_none());
+        assert_eq!(legacy.light_color(), Vec3::new(1.0, 0.58, 0.23));
+        let defaults = load_value(&fixture_v2()).unwrap().snapshot(0.0);
+        assert!(defaults.metallic_sample(hit, 0.1).is_none());
+        assert_eq!(defaults.light_color(), legacy.light_color());
+        for (key, invalid) in [
+            ("diffuse_irradiance", json!([0, 0, 16.00001])),
+            ("specular_radiance", json!([-0.1, 0, 0])),
+            ("max_distance", json!(100.00001)),
+            ("unexpected", json!(1)),
+        ] {
+            let mut bad = value.clone();
+            bad["environment"][key] = invalid;
+            rejected(bad, &format!("$.environment.{key}"));
+        }
+        value["light"]["color"] = json!([0, 16.01, 0]);
+        rejected(value, "$.light.color[1]");
+    }
+
+    #[test]
+    fn v2_query_ties_follow_stable_ids_while_v1_keeps_array_order() {
+        for version in [1, 2] {
+            let mut value = if version == 1 {
+                fixture()
+            } else {
+                fixture_v2()
+            };
+            let mut first = value["objects"][0].clone();
+            first["id"] = json!(7);
+            value["objects"].as_array_mut().unwrap().insert(0, first);
+            let forward = load_value(&value).unwrap();
+            value["objects"].as_array_mut().unwrap().reverse();
+            let reversed = load_value(&value).unwrap();
+            let ray = Ray {
+                origin: Vec3::new(0.0, 1.0, 3.0),
+                dir: -Vec3::Z,
+            };
+            let a = forward
+                .snapshot(0.0)
+                .trace(ray, 0.0, Stage::Light, true)
+                .unwrap();
+            let b = reversed
+                .snapshot(0.0)
+                .trace(ray, 0.0, Stage::Light, true)
+                .unwrap();
+            assert_eq!(b.object_id, 1);
+            if version == 2 {
+                assert_eq!(bits(Some(a)), bits(Some(b)));
+            } else {
+                assert_eq!(a.object_id, 7);
+            }
+        }
+    }
+
+    #[test]
+    fn v2_filtered_glyphs_share_lod_and_region_identity() {
+        for kind in ["stone", "wood", "cloth"] {
+            let mut value = fixture_v2();
+            value["materials"][0]["pattern"] = json!({"kind":kind,"scale":1,"palette":"abcd"});
+            let scene = load_value(&value).unwrap().snapshot(0.0);
+            let mut seen = BTreeMap::new();
+            for footprint in [0.0, 0.001, 0.04, 0.1, 0.2, 0.201, 10.0, f32::INFINITY] {
+                for x in 0..80 {
+                    let hit = Hit {
+                        distance: 1.0,
+                        position: Vec3::ZERO,
+                        normal: Vec3::Z,
+                        material: 32,
+                        object_id: 1,
+                        local: Vec3::new(x as f32 * 0.029, 0.023, 0.23),
+                    };
+                    let glyph = scene.glyph_sample(hit, 1.0, footprint);
+                    let key = scene.glyph_sample_key(hit, footprint);
+                    assert_eq!(glyph, scene.glyph_sample(hit, 0.0, footprint));
+                    if let Some(previous) = seen.insert(key, glyph) {
+                        assert_eq!(
+                            previous, glyph,
+                            "one key cannot hold a different filtered region"
+                        );
+                    }
+                    if footprint > 0.2 {
+                        assert_eq!(glyph, b'd');
+                        assert_eq!(key, 0x204);
+                    }
+                }
+            }
+            // Repeated glyphs must not erase a structural/LOD transition.
+            value["materials"][0]["pattern"]["palette"] = json!("xxxx");
+            let scene = load_value(&value).unwrap().snapshot(0.0);
+            let hit = Hit {
+                distance: 1.0,
+                position: Vec3::ZERO,
+                normal: Vec3::Z,
+                material: 32,
+                object_id: 1,
+                local: Vec3::ZERO,
+            };
+            assert_eq!(
+                scene.glyph_sample(hit, 1.0, 0.0),
+                scene.glyph_sample(hit, 1.0, 1.0)
+            );
+            assert_ne!(
+                scene.glyph_sample_key(hit, 0.0),
+                scene.glyph_sample_key(hit, 1.0)
+            );
+        }
+    }
+
+    #[test]
+    fn packaged_v2_scene_is_visible_from_all_client_views() {
+        let document = SceneDocument::from_json(crate::DEFAULT_SCENE_V2_JSON).unwrap();
+        assert_eq!(document.version(), 2);
+        let scene = document.snapshot(0.0);
+        for mode in [Mode::First, Mode::Third, Mode::Overhead] {
+            let camera = document.camera(mode);
+            let mut ids = BTreeSet::new();
+            for y in 0..45 {
+                for x in 0..80 {
+                    if let Some(hit) = scene.trace(
+                        camera.ray(x, y, 80, 45, 16.0 / 9.0),
+                        0.0,
+                        Stage::Light,
+                        true,
+                    ) {
+                        ids.insert(hit.object_id);
+                    }
+                }
+            }
+            assert!(ids.contains(&5), "textile panel absent in {}", mode.name());
+            assert!(
+                ids.contains(&8),
+                "conductor specimen absent in {}",
+                mode.name()
+            );
+            assert!(
+                ids.contains(&2) && ids.contains(&3),
+                "piers absent in {}",
+                mode.name()
+            );
+        }
     }
 
     #[test]
