@@ -1,5 +1,7 @@
 # R6 — renderer separato e secondo utilizzatore
 
+Aggiornamento R12: [copertura geometrica](GEOMETRY_COVERAGE.md) verifica Conservative9 opzionale nel nucleo, consumato dal client indipendente con scena/percorso e audit propri. Center resta il default; costo, sagome dilatate e dettagli tra campioni sono limiti misurati. Il formato JSON v2 e il producer di intersezioni restano invariati.
+
 Aggiornamento R11: [alpha dai dati](ALPHA_DATA.md) verifica materiali locali, conduttori, ambiente e camere dal JSON v2, mantenendo compatibilità v1, ricarica atomica e guida da checkout pulito. I limiti del JSON qui sotto descrivono la consegna R6 storica; il contratto corrente è nella [guida del client](clients/material-room/README.md).
 
 Nota successiva: R7 aggiunge un percorso materiale locale opzionale, documentato in [STONE_STUDY.md](STONE_STUDY.md). Questo report conserva risultati e limiti della consegna R6; il JSON di Material Room non espone ancora i nuovi parametri.

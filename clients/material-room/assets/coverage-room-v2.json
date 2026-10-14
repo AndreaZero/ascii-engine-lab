@@ -1,0 +1,508 @@
+{
+  "version": 2,
+  "name": "Coverage Room — thin rods, rails, curved edge and moving occluder",
+  "cameras": {
+    "first": {
+      "eye": [
+        0,
+        1.35,
+        8
+      ],
+      "target": [
+        0,
+        1.35,
+        0
+      ],
+      "fov_y_degrees": 60,
+      "ortho_half_height": 4.2
+    },
+    "third": {
+      "eye": [
+        7,
+        4.5,
+        10
+      ],
+      "target": [
+        0,
+        1.2,
+        0
+      ],
+      "fov_y_degrees": 50,
+      "ortho_half_height": 4.2
+    },
+    "overhead": {
+      "eye": [
+        4,
+        8,
+        6
+      ],
+      "target": [
+        0,
+        1,
+        0
+      ],
+      "fov_y_degrees": 53,
+      "ortho_half_height": 4.2
+    }
+  },
+  "environment": {
+    "diffuse_irradiance": [
+      1,
+      1,
+      1
+    ],
+    "specular_radiance": [
+      0.1,
+      0.1,
+      0.1
+    ],
+    "max_distance": 0
+  },
+  "materials": [
+    {
+      "id": 33,
+      "name": "Floor",
+      "pigment": [
+        0.7,
+        0.7,
+        0.7
+      ],
+      "pattern": {
+        "kind": "plain",
+        "scale": 1,
+        "palette": "."
+      },
+      "surface": {
+        "roughness": 1,
+        "f0": 0.04,
+        "occlusion": 1
+      }
+    },
+    {
+      "id": 34,
+      "name": "Backdrop",
+      "pigment": [
+        0.7,
+        0.7,
+        0.7
+      ],
+      "pattern": {
+        "kind": "plain",
+        "scale": 1,
+        "palette": "="
+      },
+      "surface": {
+        "roughness": 1,
+        "f0": 0.04,
+        "occlusion": 1
+      }
+    },
+    {
+      "id": 42,
+      "name": "Rod width 0.015",
+      "pigment": [
+        0.7,
+        0.7,
+        0.7
+      ],
+      "pattern": {
+        "kind": "plain",
+        "scale": 1,
+        "palette": "A"
+      },
+      "surface": {
+        "roughness": 1,
+        "f0": 0.04,
+        "occlusion": 1
+      }
+    },
+    {
+      "id": 43,
+      "name": "Rod width 0.03",
+      "pigment": [
+        0.7,
+        0.7,
+        0.7
+      ],
+      "pattern": {
+        "kind": "plain",
+        "scale": 1,
+        "palette": "B"
+      },
+      "surface": {
+        "roughness": 1,
+        "f0": 0.04,
+        "occlusion": 1
+      }
+    },
+    {
+      "id": 44,
+      "name": "Rod width 0.06",
+      "pigment": [
+        0.7,
+        0.7,
+        0.7
+      ],
+      "pattern": {
+        "kind": "plain",
+        "scale": 1,
+        "palette": "C"
+      },
+      "surface": {
+        "roughness": 1,
+        "f0": 0.04,
+        "occlusion": 1
+      }
+    },
+    {
+      "id": 45,
+      "name": "Rod width 0.12",
+      "pigment": [
+        0.7,
+        0.7,
+        0.7
+      ],
+      "pattern": {
+        "kind": "plain",
+        "scale": 1,
+        "palette": "D"
+      },
+      "surface": {
+        "roughness": 1,
+        "f0": 0.04,
+        "occlusion": 1
+      }
+    },
+    {
+      "id": 46,
+      "name": "Rod width 0.24",
+      "pigment": [
+        0.7,
+        0.7,
+        0.7
+      ],
+      "pattern": {
+        "kind": "plain",
+        "scale": 1,
+        "palette": "E"
+      },
+      "surface": {
+        "roughness": 1,
+        "f0": 0.04,
+        "occlusion": 1
+      }
+    },
+    {
+      "id": 52,
+      "name": "Rail height 0.015",
+      "pigment": [
+        0.7,
+        0.7,
+        0.7
+      ],
+      "pattern": {
+        "kind": "plain",
+        "scale": 1,
+        "palette": "F"
+      },
+      "surface": {
+        "roughness": 1,
+        "f0": 0.04,
+        "occlusion": 1
+      }
+    },
+    {
+      "id": 53,
+      "name": "Rail height 0.06",
+      "pigment": [
+        0.7,
+        0.7,
+        0.7
+      ],
+      "pattern": {
+        "kind": "plain",
+        "scale": 1,
+        "palette": "G"
+      },
+      "surface": {
+        "roughness": 1,
+        "f0": 0.04,
+        "occlusion": 1
+      }
+    },
+    {
+      "id": 54,
+      "name": "Rail height 0.12",
+      "pigment": [
+        0.7,
+        0.7,
+        0.7
+      ],
+      "pattern": {
+        "kind": "plain",
+        "scale": 1,
+        "palette": "H"
+      },
+      "surface": {
+        "roughness": 1,
+        "f0": 0.04,
+        "occlusion": 1
+      }
+    },
+    {
+      "id": 62,
+      "name": "Curved silhouette",
+      "pigment": [
+        0.7,
+        0.7,
+        0.7
+      ],
+      "pattern": {
+        "kind": "plain",
+        "scale": 1,
+        "palette": "I"
+      },
+      "surface": {
+        "roughness": 1,
+        "f0": 0.04,
+        "occlusion": 1
+      }
+    },
+    {
+      "id": 63,
+      "name": "Moving occluder",
+      "pigment": [
+        0.7,
+        0.7,
+        0.7
+      ],
+      "pattern": {
+        "kind": "plain",
+        "scale": 1,
+        "palette": "J"
+      },
+      "surface": {
+        "roughness": 1,
+        "f0": 0.04,
+        "occlusion": 1
+      }
+    }
+  ],
+  "objects": [
+    {
+      "id": 1,
+      "name": "Floor",
+      "shape": "box",
+      "position": [
+        0,
+        -0.1,
+        0
+      ],
+      "half_extents": [
+        5.5,
+        0.1,
+        5.5
+      ],
+      "material": 33
+    },
+    {
+      "id": 2,
+      "name": "Backdrop",
+      "shape": "box",
+      "position": [
+        0,
+        1.5,
+        -1.5
+      ],
+      "half_extents": [
+        4.5,
+        1.5,
+        0.05
+      ],
+      "material": 34
+    },
+    {
+      "id": 10,
+      "name": "Rod width 0.015",
+      "shape": "box",
+      "position": [
+        -3,
+        1.2,
+        0
+      ],
+      "half_extents": [
+        0.0075,
+        1.2,
+        0.04
+      ],
+      "material": 42
+    },
+    {
+      "id": 11,
+      "name": "Rod width 0.03",
+      "shape": "box",
+      "position": [
+        -2.55,
+        1.2,
+        0
+      ],
+      "half_extents": [
+        0.015,
+        1.2,
+        0.04
+      ],
+      "material": 43
+    },
+    {
+      "id": 12,
+      "name": "Rod width 0.06",
+      "shape": "box",
+      "position": [
+        -2.1,
+        1.2,
+        0
+      ],
+      "half_extents": [
+        0.03,
+        1.2,
+        0.04
+      ],
+      "material": 44
+    },
+    {
+      "id": 13,
+      "name": "Rod width 0.12",
+      "shape": "box",
+      "position": [
+        -1.65,
+        1.2,
+        0
+      ],
+      "half_extents": [
+        0.06,
+        1.2,
+        0.04
+      ],
+      "material": 45
+    },
+    {
+      "id": 14,
+      "name": "Rod width 0.24",
+      "shape": "box",
+      "position": [
+        -1.2,
+        1.2,
+        0
+      ],
+      "half_extents": [
+        0.12,
+        1.2,
+        0.04
+      ],
+      "material": 46
+    },
+    {
+      "id": 20,
+      "name": "Rail height 0.015",
+      "shape": "box",
+      "position": [
+        -0.35,
+        0.45,
+        -0.15
+      ],
+      "half_extents": [
+        0.4,
+        0.0075,
+        0.04
+      ],
+      "material": 52
+    },
+    {
+      "id": 21,
+      "name": "Rail height 0.06",
+      "shape": "box",
+      "position": [
+        -0.35,
+        1.15,
+        -0.15
+      ],
+      "half_extents": [
+        0.4,
+        0.03,
+        0.04
+      ],
+      "material": 53
+    },
+    {
+      "id": 22,
+      "name": "Rail height 0.12",
+      "shape": "box",
+      "position": [
+        -0.35,
+        1.85,
+        -0.15
+      ],
+      "half_extents": [
+        0.4,
+        0.06,
+        0.04
+      ],
+      "material": 54
+    },
+    {
+      "id": 30,
+      "name": "Curved silhouette",
+      "shape": "ellipsoid",
+      "position": [
+        1.85,
+        1.2,
+        -0.1
+      ],
+      "half_extents": [
+        0.6,
+        1.15,
+        0.18
+      ],
+      "material": 62
+    },
+    {
+      "id": 31,
+      "name": "Moving occluder",
+      "shape": "box",
+      "position": [
+        1.85,
+        1.2,
+        0.55
+      ],
+      "half_extents": [
+        0.75,
+        1.2,
+        0.04
+      ],
+      "motion": {
+        "translation": {
+          "amplitude": [
+            1.6,
+            0,
+            0
+          ],
+          "speed": 1,
+          "phase": -1.5707963267948966
+        }
+      },
+      "material": 63
+    }
+  ],
+  "light": {
+    "position": [
+      0,
+      5,
+      4
+    ],
+    "color": [
+      0,
+      0,
+      0
+    ]
+  }
+}

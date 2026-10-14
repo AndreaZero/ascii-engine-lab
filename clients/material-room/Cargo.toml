@@ -11,3 +11,8 @@ glam = "=0.30.9"
 serde_json = "1.0"
 pollster = "0.4"
 winit = "=0.30.12"
+
+[dev-dependencies]
+# Frozen R11 compositor oracle, exercised against this client's real v1/v2 data.
+rayon = "=1.11.0"
+bytemuck = "=1.25.2"

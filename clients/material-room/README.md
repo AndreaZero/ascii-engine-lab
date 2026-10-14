@@ -20,7 +20,7 @@ Il default CLI e `Avvia-materiali.cmd` rimangono sul campione v1; per v2 passare
 
 Su Windows, [Avvia-alpha.cmd](../../Avvia-alpha.cmd) avvia direttamente v2 e ricompila sempre con `--locked --release`, così l'eseguibile segue i sorgenti correnti. Accetta gli stessi argomenti aggiuntivi della CLI.
 
-Comandi: **1/2/3** prima/terza/alto; **Q/E** orbita; **WASD** sposta osservatore; **Z/X** altezza; **Spazio** pausa; **R** rilegge JSON; **H** etichette; **Esc** chiude. Una ricarica valida sostituisce insieme tutti i dati, ripristina la camera del modo corrente dalla nuova scena e azzera la history dei glifi; il tempo di animazione prosegue. Un file non valido conserva documento, camera, tempo e history precedenti e stampa la diagnosi. I tasti 1/2/3 ripartono dalla camera dichiarata per quel modo. Le camere sono osservatori, non controlli di un personaggio giocabile.
+Comandi: **1/2/3** prima/terza/alto; **Q/E** orbita; **WASD** sposta osservatore; **Z/X** altezza; **Spazio** pausa; **R** rilegge JSON; **H** etichette; **C** cambia campionamento primario; **P** attiva/disattiva il percorso camera dello studio di copertura; **Esc** chiude. Una ricarica valida sostituisce insieme tutti i dati, ripristina la camera del modo corrente dalla nuova scena e azzera la history dei glifi; il tempo di animazione prosegue. Un file non valido conserva documento, camera, tempo e history precedenti e stampa la diagnosi. I tasti 1/2/3 ripartono dalla camera dichiarata per quel modo. Anche C e P azzerano la history. Le camere sono osservatori, non controlli di un personaggio giocabile.
 
 `--profile economy|balanced|detail`, `--workers auto|N` e `--backend auto|vulkan|dx12|metal|gl` usano gli stessi budget del laboratorio. `--sequence 180 --camera all` salva 180 PNG per vista a tick simulati di 1/30 s; `--time` sceglie il tempo iniziale; `--seconds` limita lo smoke a finestra. `--frames` senza `--sequence` avanza comunque lo stato di 1/30 s per frame, misura tutti i fotogrammi e salva il primo e l'ultimo. `--orbit-speed` è solo headless, accetta da -2 a 2 radianti/s e aggiunge un'orbita dalla posa iniziale: `frame / 30 * speed`. Il default 0 lascia ferma la camera. Le catture sono GPU reali, non immagini ricostruite con un altro renderer.
 
@@ -29,6 +29,36 @@ Per una sequenza con camera e oggetti in movimento nelle tre viste:
 ```sh
 cargo run --locked --release -p ascii-material-room -- --scene clients/material-room/assets/material-room-v2.json --sequence 180 --camera all --orbit-speed 0.025 --profile detail --workers 8 --output evidence/my-material-room-motion
 ```
+
+## Copertura geometrica opzionale
+
+`--sampling center|conservative9` sceglie il campionamento primario; il default `center` conserva il percorso R11. `conservative9` interroga la scena in nove punti per cella: centro e griglia 3×3 con offset di ±1/3 di cella. Sceglie il gruppo oggetto/materiale più vicino per profondità lungo la direzione della camera; se il centro appartiene a quel gruppo, lo preferisce. Le uguaglianze esatte sono risolte da ID oggetto, ID materiale e indice del campione. Viene ombreggiata una sola superficie e prodotto un solo glifo, con impronta materiale di una cella intera. Ombre e riflessi partono dalla superficie scelta: non vengono eseguiti nove passaggi completi di illuminazione.
+
+Questo percorso può recuperare aste e bordi fra raggi centrali, ma può anche allargare una silhouette fino alla cella e perdere geometria fra i nove punti. Non misura la copertura d'area esatta, non miscela RGB e non elimina tutto l'aliasing. La history considera anche campione scelto e maschera dei campioni appartenenti al gruppo: un cambio di provenienza libera il glifo precedente. Non è una garanzia generale di stabilità percettiva in movimento.
+
+[assets/coverage-room-v2.json](assets/coverage-room-v2.json) è un carico tecnico con aste, traversi, bordo curvo e occlusore mobile. I glifi distinti permettono di riconoscere il soggetto dalle celle effettivamente prodotte. `--camera-path coverage` applica alla camera dei dati un percorso periodico di sei secondi: traslazione laterale, allontanamento, piccola orbita e variazione di zoom nella vista dall'alto. Il default `static` lascia invariata la posa, salvo i controlli manuali o l'eventuale `--orbit-speed` headless. Profilo, densità e campionamento non cambiano durante il percorso.
+
+Per catturare lo stesso percorso nelle tre viste:
+
+```sh
+cargo run --locked --release -p ascii-material-room -- --scene clients/material-room/assets/coverage-room-v2.json --sampling conservative9 --camera-path coverage --sequence 180 --camera all --profile detail --workers 8 --output evidence/my-coverage-nine
+```
+
+Per il confronto ripetere con `--sampling center` e una diversa directory di output, mantenendo invariati gli altri parametri. Su Windows [Avvia-copertura.cmd](../../Avvia-copertura.cmd) ricompila sempre in release e apre questa scena con nove campioni e percorso attivo; C e P consentono il confronto interattivo.
+
+Per misurare snapshot e composizione senza creare una GPU:
+
+```sh
+cargo run --locked --release -p ascii-material-room -- --scene clients/material-room/assets/coverage-room-v2.json --cpu-only --sampling conservative9 --camera-path coverage --camera all --frames 180 --profile detail --workers 8 --output evidence/my-coverage-cpu
+```
+
+`--cpu-only` implica headless, esclude catture e audit centrale e rifiuta `--sequence`. Non misura presentazione o tempo GPU. `primary_rays` conta le query primarie tentate (una o nove per cella, comprese quelle vuote), escludendo ombre e riflessi; `alternate_primary` conta le celle la cui superficie scelta viene da un punto non centrale, anche quando il glifo risulta oscuro. Nessuno dei due contatori misura l'area corretta o la qualità visiva. L'esempio `coverage_audit` confronta le celle con un riferimento geometrico denso fuori dai timer, riportando anche massa mancata ed eccesso; il riferimento campionato resta approssimato.
+
+```sh
+cargo run --locked --release -p ascii-material-room --example coverage_audit -- --output evidence/my-coverage-audit
+```
+
+L'audit predefinito usa 13 istanti inclusivi fra 0 e 6 secondi, griglia 80×45 e riferimento 16×16 punti per cella. A inizio, metà e fine percorso ripete il riferimento a 32×32 per misurarne la convergenza. Il JSON conserva risultati per oggetto, assenze agli istanti campionati, transizioni e confronto history/fresh; riporta separatamente conteggi delle query del client R11 e del carico di copertura. Un budget esplicito di 250 milioni di raggi limita le combinazioni richieste. Gli istanti discreti non dimostrano assenza di errori intermedi, né il riferimento finito costituisce una verità geometrica esatta.
 
 ## Dati comuni e compatibilità v1
 
@@ -120,6 +150,10 @@ cargo test --locked --workspace --all-targets
 
 [tests/data_contract.rs](tests/data_contract.rs) confronta il produttore v1 con il sorgente e JSON congelati di fine R10: celle e statistiche bit per bit nelle tre camere, quattro stage, tempi ripetuti/in movimento, uno e otto worker e reset della history. Altri test verificano indipendenza degli snapshot, determinismo v2, riordino con ID stabili, modifiche di materiali/luce/ambiente/camere solo dai dati e rifiuto degli errori annidati. Il confronto usa il compositore corrente su entrambi i produttori; le regressioni storiche del renderer sono coperte separatamente nel workspace. Le prove dell'host coprono la ricarica valida/invalida e il reset di camera/history.
 
+[tests/r11_composition_parity.rs](tests/r11_composition_parity.rs) confronta invece il compositore corrente in modalità predefinita con camera e compositore congelati al commit R11 `9866c35`, su dati v1/v2, tre viste, tempi, reset e uno/otto worker. [coverage_contract.rs](../../crates/ascii-render/tests/coverage_contract.rs) usa piani e strisce analitici indipendenti per verificare geometria sottile davanti a uno sfondo, occlusione completa, selezione per profondità, impronta materiale, disocclusioni e provenienza della history. Registra anche due limiti intenzionali: geometria ancora persa fra i campioni e supporto apparente allargato. Le copie congelate conservano i propri test originali: le loro esecuzioni ripetute non sono capacità aggiuntive.
+
 ## Evidenze
 
-Ogni esecuzione headless salva `run.json`, la **scena validata effettivamente caricata**, versione dati, capacità GPU, camere iniziali, velocità d'orbita, griglia, worker, p50/p95/p99 CPU e submission/attesa, contatori temporali e CSV. Dodici warmup CPU+GPU esclusi; PNG fuori dai timer. L'attesa non è un timestamp GPU o FPS di presentazione. Catture e scritture possono influenzare la schedulazione. Statico identico non prova da solo assenza di sfarfallio in movimento, e 30 tick simulati/s non sono una misura di 30 FPS. Risultati storici R6 in [REUSE.md](../../REUSE.md); stato corrente e limiti verificati in [PROJECT_STATUS.md](../../PROJECT_STATUS.md), criteri della tranche in [ENGINE_PATH.md](../../ENGINE_PATH.md).
+Ogni esecuzione headless salva `run.json`, la **scena validata effettivamente caricata**, versione dati, camere iniziali, velocità d'orbita, percorso, campionamento, griglia, worker, contatori temporali e CSV. Le distribuzioni CPU separano snapshot, composizione e totale; la submission/attesa GPU è separata. Dodici warmup esclusi; PNG e audit fuori dai timer. In `--cpu-only` le capacità GPU e la distribuzione submission/attesa sono `null`; il CSV usa zero come segnaposto per l'attesa, non come misura GPU. L'audit incluso nel normale `run.json` usa solo raggi centrali e non misura la copertura del percorso a nove campioni: per questo serve `coverage_audit`.
+
+La finestra salva `window-run.json` nella directory `--output`: intervalli reali fra callback, CPU snapshot/composizione e durata CPU di acquire/submit/present, con i primi dodici frame esclusi e conteggio dei cambi di configurazione. Per una misura confrontabile lasciare invariati vista e controlli durante l'esecuzione. Gli intervalli includono schedulazione e lavoro precedente; acquire/submit/present e attesa headless non sono timestamp GPU o misure di scansione del display. Catture e scritture possono influenzare la schedulazione. Statico identico non prova da solo assenza di sfarfallio in movimento, e 30 tick simulati/s non sono una misura di 30 FPS. Risultati storici R6 in [REUSE.md](../../REUSE.md); stato corrente e limiti verificati in [PROJECT_STATUS.md](../../PROJECT_STATUS.md), criteri della tranche in [ENGINE_PATH.md](../../ENGINE_PATH.md).

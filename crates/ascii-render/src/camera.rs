@@ -176,6 +176,36 @@ impl Camera {
         self.prepare(cols, rows, aspect).ray(x, y)
     }
 
+    /// Sample within a cell: offsets are relative to its center in cell units,
+    /// positive right/down, and must be finite in [-0.5, 0.5]. Zero offset is
+    /// bitwise identical to `ray`. Grid dimensions and aspect must be positive
+    /// (aspect finite). Like `ray`, x/y may extend beyond the grid for footprint
+    /// queries; callers maintain valid camera controls.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ray_sample(
+        self,
+        x: u32,
+        y: u32,
+        cols: u32,
+        rows: u32,
+        aspect: f32,
+        offset: [f32; 2],
+    ) -> Result<Ray, String> {
+        if cols == 0 || rows == 0 || !aspect.is_finite() || aspect <= 0. {
+            return Err(
+                "camera sampling requires positive grid dimensions and finite positive aspect"
+                    .into(),
+            );
+        }
+        if offset
+            .into_iter()
+            .any(|v| !v.is_finite() || !(-0.5..=0.5).contains(&v))
+        {
+            return Err("camera sample offsets must be finite and within [-0.5, 0.5]".into());
+        }
+        Ok(self.prepare(cols, rows, aspect).ray_sample(x, y, offset))
+    }
+
     pub(crate) fn prepare(self, cols: u32, rows: u32, aspect: f32) -> PreparedCamera {
         let (eye, target) = self.pose();
         let f = if let Some(view) = self.view {
@@ -226,6 +256,34 @@ impl Camera {
 }
 
 impl PreparedCamera {
+    pub(crate) fn forward_depth(self, position: Vec3) -> f32 {
+        (position - self.eye).dot(self.forward)
+    }
+
+    /// Trusted internal offsets use the same projection as the center ray.
+    pub(crate) fn ray_sample(self, x: u32, y: u32, offset: [f32; 2]) -> Ray {
+        if offset == [0., 0.] {
+            return self.ray(x, y);
+        }
+        let sx = ((x as f32 + 0.5 + offset[0]) / self.cols as f32 * 2. - 1.) * self.aspect;
+        let sy = 1. - (y as f32 + 0.5 + offset[1]) / self.rows as f32 * 2.;
+        if self.mode == Mode::Overhead {
+            let half_height = self.orthographic_half_height.unwrap_or(5.);
+            Ray {
+                origin: self.eye
+                    + self.right * sx * half_height * self.zoom
+                    + self.up * sy * half_height * self.zoom,
+                dir: self.forward,
+            }
+        } else {
+            let scale = self.perspective_scale;
+            Ray {
+                origin: self.eye,
+                dir: (self.forward + self.right * sx * scale + self.up * sy * scale).normalize(),
+            }
+        }
+    }
+
     pub(crate) fn ray(self, x: u32, y: u32) -> Ray {
         let sx = ((x as f32 + 0.5) / self.cols as f32 * 2. - 1.) * self.aspect;
         let sy = 1. - (y as f32 + 0.5) / self.rows as f32 * 2.;
@@ -575,6 +633,71 @@ mod tests {
                 assert!(ray.origin.is_finite());
                 assert!(ray.dir.is_finite());
                 assert!((ray.dir.length() - 1.).abs() < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn sample_center_preserves_legacy_and_explicit_ray_bits() {
+        let view = CameraView::new(Vec3::new(2., 3., 4.), Vec3::ZERO, 70., 2.).unwrap();
+        for mode in [Mode::First, Mode::Third, Mode::Overhead] {
+            for mut camera in [Camera::new(mode), Camera::with_view(mode, view)] {
+                camera.orbit = -0.31;
+                camera.zoom = 1.7;
+                camera.offset = Vec3::new(0.1, -0.2, 0.3);
+                for y in 0..7 {
+                    for x in 0..11 {
+                        assert_eq!(
+                            ray_bits(camera.ray(x, y, 11, 7, 16. / 9.)),
+                            ray_bits(camera.ray_sample(x, y, 11, 7, 16. / 9., [0., 0.]).unwrap()),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sample_offsets_move_right_and_down_in_cell_units() {
+        let view = CameraView::new(Vec3::new(0., 0., 4.), Vec3::ZERO, 90., 1.).unwrap();
+        for mode in [Mode::First, Mode::Third, Mode::Overhead] {
+            let camera = Camera::with_view(mode, view);
+            let ray = camera
+                .ray_sample(2, 1, 4, 4, 2., [1. / 3., 1. / 3.])
+                .unwrap();
+            if mode == Mode::Overhead {
+                assert_vec_close(ray.origin, Vec3::new(5. / 6., 1. / 12., 4.));
+                assert_vec_close(ray.dir, Vec3::NEG_Z);
+            } else {
+                assert_vec_close(ray.origin, Vec3::new(0., 0., 4.));
+                assert_vec_close(ray.dir, Vec3::new(5. / 6., 1. / 12., -1.).normalize());
+            }
+            // Cell boundaries coincide, including a neighbor beyond the grid.
+            assert_eq!(
+                ray_bits(camera.ray_sample(3, 2, 4, 4, 2., [0.5, 0.]).unwrap()),
+                ray_bits(camera.ray_sample(4, 2, 4, 4, 2., [-0.5, 0.]).unwrap()),
+            );
+        }
+    }
+
+    #[test]
+    fn sample_rejects_invalid_grid_aspect_and_offsets() {
+        let camera = Camera::new(Mode::Third);
+        for (cols, rows, aspect) in [
+            (0, 4, 1.),
+            (4, 0, 1.),
+            (4, 4, 0.),
+            (4, 4, -1.),
+            (4, 4, f32::NAN),
+            (4, 4, f32::INFINITY),
+        ] {
+            assert!(camera
+                .ray_sample(0, 0, cols, rows, aspect, [0., 0.])
+                .is_err());
+        }
+        for value in [f32::NAN, f32::INFINITY, -0.5001, 0.5001] {
+            for offset in [[value, 0.], [0., value]] {
+                assert!(camera.ray_sample(0, 0, 4, 4, 1., offset).is_err());
             }
         }
     }

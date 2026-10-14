@@ -45,15 +45,22 @@ profiling/quality experiment before promising production performance.
 
 ## Remaining gates
 
-Next: geometry coverage, motion and cost. Preserve the R11 workload and its
-timing failures (4/9 eight-worker runs above p95 16.7 ms), then choose a bounded
-coverage/profiling experiment before making realtime performance claims. Do not
-substitute another material showcase for this gate. No new writer is assigned
-automatically by this document.
+[R12](GEOMETRY_COVERAGE.md) verifies a bounded primary-coverage option and a
+comparison harness. Conservative9 recovers thin foreground, but introduces
+silhouette expansion, residual sample gaps and extra query cost: 8/9 eight-worker
+CPU-only runs exceed p95 16.7 ms. Center remains the default. R11's earlier 4/9
+failures are retained; the general geometry/motion/cost gate is not closed.
+
+Next: compare a bounded query-cost/acceleration change on the preserved R11/R12
+scenes and paths, with hit/tie semantics, history, output and density held fixed.
+Only measured evidence should choose the traversal structure; then address its
+dynamic occupancy lifetime. Do not substitute another material showcase, hide
+coverage loss through reduced density or promise realtime performance. No new
+writer is assigned automatically by this document.
 
 | Gate | Engineering work | Evidence needed to close it |
 | --- | --- | --- |
-| Geometry coverage and motion | Thin objects, edges, distance transitions and disocclusions; choose acceleration or sampling changes from measurements | Frozen scene and camera paths, visual comparison in all views, CPU and window pacing reported without hidden quality reductions |
+| Geometry coverage and motion | R12 opt-in primary sampling verified in a bounded scene; cost, sample gaps and foreground dilation remain; next compare query traversal | Preserve R11/R12 scene/path and tie semantics, dense-reference coverage, three-view motion and CPU/window pacing without hidden quality reductions |
 | Dynamic scene updates | A moving/opening/removable object changes real occupancy and identity | Primary visibility, shadows and reflections agree at the same tick; additions/removals leave no stale glyph history |
 | Practical creation and portability | Preview/reload/save for the supported content subset; useful controls rather than a full editor | A new scene can be created and reopened without core edits; documented package and execution on another physical machine |
 | V1 for a declared BLACKWATER subset | Fix supported scenes, actors, effects, distances, quality and hardware budget | A client supplies its state through documented APIs and the complete agreed workload passes; gameplay integration needs its own authorized task |

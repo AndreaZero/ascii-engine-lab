@@ -110,8 +110,10 @@ name = "ascii-material-room"
 version = "0.1.0"
 dependencies = [
  "ascii-render",
+ "bytemuck",
  "glam",
  "pollster",
+ "rayon",
  "serde_json",
  "winit",
 ]

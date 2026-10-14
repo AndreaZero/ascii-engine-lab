@@ -21,11 +21,12 @@ A reusable renderer under development in Rust + wgpu. Spatial queries produce ch
 | Metal, R9 | Analytic convex shield, worked/oxidized steel and optional RGB conductor response | [Metal study](METAL_STUDY.md); verified three-view captures and backend parity, stylized material, no environment reflections or anisotropy |
 | Common scene/environment, R10 | Optional irradiance/radiance contract and one local reflection bounce; stone, metal and animated cape together | [Environment study](ENVIRONMENT_STUDY.md); bounded proxies, three-view captures, legacy parity; not full GI or final artwork |
 | Alpha data gate, R11 | Independent client consumes validated v2 surfaces, conductors, constant environment and authored cameras; v1 compatibility and atomic reload | [Alpha data](ALPHA_DATA.md); 204 test executions, 60 legacy PNGs unchanged, backend parity and clean-source build/run guide; bounded experimental scope |
+| Primary coverage, R12 | Opt-in Conservative9 semantic sampling with coverage-aware history; Center remains default | [Geometry coverage](GEOMETRY_COVERAGE.md); 292 test executions, 72 legacy PNGs unchanged, dense geometry comparisons, three-view windows/motion; silhouette expansion, sample gaps and measured extra cost remain |
 | CPU configuration | Serial path and configurable private worker pool, explicit density profiles | [Performance](PERFORMANCE.md), [portability](PORTABILITY.md); one machine does not establish minimum system requirements |
 
 ## Work in progress
 
-R11 closes the bounded alpha data gate: scenes, supported materials and cameras can be changed through validated Material Room data without changing the renderer or importing the courtyard fixture. Both clients and a clean-source build/run guide were verified on the same PC. API stability, final art, general authoring and another physical machine remain open. The next gate is geometry coverage and motion/cost: thin objects, edges, distance transitions and disocclusions, including profiling the observed timing variability. See [the engine development path](ENGINE_PATH.md).
+R11 closes the bounded alpha data gate. R12 verifies an optional nine-ray primary coverage policy, fixed scene/camera paths, independent dense-reference comparisons and real-window pacing in three views. It recovers thin foreground but widens silhouettes, can hide small background slivers and still misses between samples. The general geometry/motion/cost gate remains open. Next is a bounded query-cost/acceleration comparison on the preserved workloads before extending dynamic occupancy. API stability, final art, general authoring and another physical machine remain open. See [the engine development path](ENGINE_PATH.md).
 
 Fire, richer water dynamics, destructible environments, gameplay integration, more content and tools remain separate future work. Their inclusion in the design does not imply implementation.
 
@@ -41,6 +42,8 @@ R10 common-scene CPU-only medians with 8 workers are 6.34 / 7.36 / 7.55 ms with 
 
 R11 Material Room v2 CPU snapshot/composition medians with 8 workers are 10.70 / 7.30 / 7.73 ms at 240×135, measured inside synchronized GPU runs. Four of nine runs exceed p95 16.7 ms (worst 36.47 ms); later motion runs are faster and do not cancel those exceedances. Content differs from R10 and host activity is not isolated. This is neither an optimization comparison nor a realtime performance guarantee. Submission/wait remains separate from GPU timestamp time.
 
+R12 CPU-only medians at 240x135 with 8 workers are 4.43 / 4.96 / 5.25 ms for Center and 14.84 / 16.57 / 15.67 ms for Conservative9. Nine exceeds p95 16.7 ms in 8/9 runs (worst 31.91 ms); Center does in 0/9 during this session. Earlier R11 failures remain recorded. Actual diagnostic-window callback intervals have p50 around 10 ms for Center and 20–21 ms for Nine on this desktop. These are different measurement modes, not GPU timestamps, universal FPS or proof of production readiness. The default remains Center; no silent density reduction occurs.
+
 ## Website/documentation coordination
 
 The engine coordinator owns this status file, engine source and verification reports. The website project owns page structure, layout, navigation and presentation. Link technical claims to reports and label each capability as verified, experimental or planned. Preserve the distinction between intended visual quality and achieved quality.
@@ -49,4 +52,4 @@ The separate website repository is now identified as [ascii-engine-website](http
 
 Generated captures and movies remain local and are excluded from Git, as are private visual references. The website should not promise downloadable binaries or embed unavailable media. Request a specific delivery of selected original captures when needed; do not publish the user's reference screenshots as project assets.
 
-Primary links: [repository](https://github.com/AndreaZero/ascii-engine-lab), [getting started](README.md), [package metadata](Cargo.toml). The package is version 0.1.0; R1–R11 are development tranche labels, not semantic version releases.
+Primary links: [repository](https://github.com/AndreaZero/ascii-engine-lab), [getting started](README.md), [package metadata](Cargo.toml). The package is version 0.1.0; R1–R12 are development tranche labels, not semantic version releases.

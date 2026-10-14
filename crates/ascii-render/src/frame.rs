@@ -6,8 +6,72 @@ use crate::{
 use glam::Vec3;
 use rayon::prelude::*;
 
-// Surface ID, glyph, illumination anchor, color, source material, structure key.
-type HistoryCell = (u32, u32, f32, [f32; 4], u32, u32);
+/// Fixed primary visibility samples. Center preserves the original renderer.
+/// Conservative9 traces a regular 3x3 pattern and shades one semantic surface:
+/// nearest positive finite forward depth, then object/material/sample index for
+/// exact ties. The center is preferred when it belongs to the winning group.
+/// This can widen silhouettes by a cell and still miss geometry between samples;
+/// it is neither exact area coverage nor an RGB supersampling/averaging pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PrimarySampling {
+    #[default]
+    Center,
+    Conservative9,
+}
+impl PrimarySampling {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Center => "center",
+            Self::Conservative9 => "conservative9",
+        }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "center" => Some(Self::Center),
+            "conservative9" => Some(Self::Conservative9),
+            _ => None,
+        }
+    }
+    fn rays(self) -> usize {
+        match self {
+            Self::Center => 1,
+            Self::Conservative9 => 9,
+        }
+    }
+}
+
+// Center first, then row-major with the repeated center omitted. Offsets are
+// relative to the cell center; the resulting samples are uniformly spaced.
+const PRIMARY_OFFSETS: [[f32; 2]; 9] = [
+    [0., 0.],
+    [-1. / 3., -1. / 3.],
+    [0., -1. / 3.],
+    [1. / 3., -1. / 3.],
+    [-1. / 3., 0.],
+    [1. / 3., 0.],
+    [-1. / 3., 1. / 3.],
+    [0., 1. / 3.],
+    [1. / 3., 1. / 3.],
+];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PrimaryHistory {
+    object: u32,
+    material: u32,
+    sample: u8,
+    coverage_mask: u16,
+}
+
+// Surface ID, glyph, illumination anchor, color, source material, structure key,
+// and exact primary sampling provenance (all zero for legacy Center semantics).
+type HistoryCell = (u32, u32, f32, [f32; 4], u32, u32, PrimaryHistory);
+
+#[derive(Clone, Copy)]
+struct PrimaryHit {
+    ray: Ray,
+    hit: Hit,
+    history: PrimaryHistory,
+}
 
 /// Each worker owns its output slot; history is read-only until all slots finish.
 /// Statistics are intentionally not reduced by Rayon: floating-point addition
@@ -20,17 +84,19 @@ struct CellResult {
     matched: bool,
     glyph_changed: bool,
     color_delta: f32,
+    alternate_primary: bool,
 }
 
 impl Default for CellResult {
     fn default() -> Self {
         Self {
             cell: GlyphCell::default(),
-            history: (0, 32, 0., [0., 0., 0., 1.], 0, 0),
+            history: (0, 32, 0., [0., 0., 0., 1.], 0, 0, PrimaryHistory::default()),
             reflected: false,
             matched: false,
             glyph_changed: false,
             color_delta: 0.,
+            alternate_primary: false,
         }
     }
 }
@@ -42,6 +108,10 @@ pub struct FrameStats {
     pub matched: usize,
     pub glyph_changes: usize,
     pub mean_color_delta: f32,
+    /// Attempted primary visibility traces, excluding shadows/reflections.
+    pub primary_rays: usize,
+    /// Cells whose selected semantic hit used a non-center primary sample.
+    pub alternate_primary: usize,
 }
 #[derive(Default)]
 pub struct Composer {
@@ -49,6 +119,7 @@ pub struct Composer {
     scratch: Vec<CellResult>,
     // None means truly serial execution on the caller, without a Rayon pool.
     pool: Option<rayon::ThreadPool>,
+    primary_sampling: PrimarySampling,
 }
 impl Composer {
     /// Creates one private persistent pool for >=2 workers. Zero, like one,
@@ -78,6 +149,19 @@ impl Composer {
 
     pub fn reset(&mut self) {
         self.previous_cells.clear();
+    }
+
+    pub fn primary_sampling(&self) -> PrimarySampling {
+        self.primary_sampling
+    }
+
+    /// Changing the visibility policy invalidates history; setting the same
+    /// value keeps it. The worker pool and allocated buffers are retained.
+    pub fn set_primary_sampling(&mut self, sampling: PrimarySampling) {
+        if self.primary_sampling != sampling {
+            self.primary_sampling = sampling;
+            self.reset();
+        }
     }
     // Explicit prototype inputs; no global window/fixture coupling in this API.
     #[allow(clippy::too_many_arguments)]
@@ -113,6 +197,7 @@ impl Composer {
             stage,
             cols,
             local_materials,
+            primary_sampling: self.primary_sampling,
         };
         self.scratch.resize(count, CellResult::default());
         let previous = &self.previous_cells;
@@ -135,10 +220,16 @@ impl Composer {
             }
         }
         let mut cells = Vec::with_capacity(count);
-        let mut stats = FrameStats::default();
+        // Every cell attempts the entire fixed pattern, including empty cells.
+        // No per-ray atomics or extra per-cell counters are needed in workers.
+        let mut stats = FrameStats {
+            primary_rays: count * self.primary_sampling.rays(),
+            ..FrameStats::default()
+        };
         self.previous_cells.clear();
         self.previous_cells.reserve(count);
         for result in &self.scratch {
+            stats.alternate_primary += usize::from(result.alternate_primary);
             if result.reflected {
                 stats.reflected += 1;
             }
@@ -176,21 +267,91 @@ struct PreparedFrame<'a, S: Scene + Sync> {
     stage: Stage,
     cols: u32,
     local_materials: bool,
+    primary_sampling: PrimarySampling,
 }
 
 impl<S: Scene + Sync> PreparedFrame<'_, S> {
+    fn primary_hit(&self, x: u32, y: u32) -> Option<PrimaryHit> {
+        if self.primary_sampling == PrimarySampling::Center {
+            let ray = self.camera.ray(x, y);
+            return self
+                .scene
+                .trace(ray, self.time, self.stage, true)
+                .map(|hit| PrimaryHit {
+                    ray,
+                    hit,
+                    history: PrimaryHistory::default(),
+                });
+        }
+        let samples: [Option<(Ray, Hit, f32)>; 9] = std::array::from_fn(|index| {
+            let ray = self.camera.ray_sample(x, y, PRIMARY_OFFSETS[index]);
+            let hit = self.scene.trace(ray, self.time, self.stage, true)?;
+            let depth = self.camera.forward_depth(hit.position);
+            (depth.is_finite() && depth > 0. && hit.distance.is_finite() && hit.distance > 0.)
+                .then_some((ray, hit, depth))
+        });
+        let (winner_index, &(_, winner, _)) = samples
+            .iter()
+            .enumerate()
+            .filter_map(|(index, sample)| sample.as_ref().map(|sample| (index, sample)))
+            .min_by(|(a_index, a), (b_index, b)| {
+                a.2.total_cmp(&b.2)
+                    .then_with(|| a.1.object_id.cmp(&b.1.object_id))
+                    .then_with(|| a.1.material.cmp(&b.1.material))
+                    .then_with(|| a_index.cmp(b_index))
+            })?;
+        let same_group =
+            |hit: Hit| hit.object_id == winner.object_id && hit.material == winner.material;
+        let index = if samples[0].is_some_and(|(_, hit, _)| same_group(hit)) {
+            0
+        } else {
+            winner_index
+        };
+        let (ray, hit, _) = samples[index]?;
+        let coverage_mask = samples.iter().enumerate().fold(0, |mask, (index, sample)| {
+            if sample.is_some_and(|(_, hit, _)| same_group(hit)) {
+                mask | (1 << index)
+            } else {
+                mask
+            }
+        });
+        Some(PrimaryHit {
+            ray,
+            hit,
+            history: PrimaryHistory {
+                object: hit.object_id,
+                material: hit.material,
+                sample: index as u8,
+                coverage_mask,
+            },
+        })
+    }
+
     fn cell(&self, index: usize, previous: Option<&HistoryCell>) -> CellResult {
         let x = (index % self.cols as usize) as u32;
         let y = (index / self.cols as usize) as u32;
-        let ray = self.camera.ray(x, y);
-        let Some(hit) = self.scene.trace(ray, self.time, self.stage, true) else {
-            return CellResult::default();
-        };
         let mut result = CellResult::default();
+        let Some(primary) = self.primary_hit(x, y) else {
+            return result;
+        };
+        let PrimaryHit {
+            ray,
+            hit,
+            history: primary_history,
+        } = primary;
+        result.alternate_primary = primary_history.sample != 0;
         let mut id = surface_id(hit);
-        let adjacent = self
-            .local_materials
-            .then(|| [self.camera.ray(x + 1, y), self.camera.ray(x, y + 1)]);
+        let adjacent = self.local_materials.then(|| {
+            if primary_history.sample == 0 {
+                [self.camera.ray(x + 1, y), self.camera.ray(x, y + 1)]
+            } else {
+                let offset = PRIMARY_OFFSETS[primary_history.sample as usize];
+                [
+                    self.camera.ray_sample(x + 1, y, offset),
+                    self.camera.ray_sample(x, y + 1, offset),
+                ]
+            }
+        });
         let mut footprint = adjacent.map_or(0., |rays| surface_footprint(ray, rays, hit));
         let mut color = self.shade_hit(hit, -ray.dir, footprint);
         let mut source = hit;
@@ -241,10 +402,13 @@ impl<S: Scene + Sync> PreparedFrame<'_, S> {
         // Lighting hysteresis must not hide authored region/material changes.
         // Matching statistics remain ID-only for compatibility with prior runs.
         let mut anchor = illumination;
-        if let Some(&(previous_id, old, old_i, old_color, old_material, old_key)) = previous {
+        if let Some(&(previous_id, old, old_i, old_color, old_material, old_key, old_primary)) =
+            previous
+        {
             if previous_id == id
                 && old_material == source.material
                 && old_key == history_key
+                && old_primary == primary_history
                 && old != 32
                 && glyph != 32
                 && (illumination - old_i).abs() < 0.022
@@ -267,7 +431,15 @@ impl<S: Scene + Sync> PreparedFrame<'_, S> {
             pad: 0,
             color,
         };
-        result.history = (id, glyph, anchor, color, source.material, history_key);
+        result.history = (
+            id,
+            glyph,
+            anchor,
+            color,
+            source.material,
+            history_key,
+            primary_history,
+        );
         result
     }
 
@@ -1670,6 +1842,8 @@ mod tests {
         assert_eq!(actual.reflected, expected.reflected);
         assert_eq!(actual.matched, expected.matched);
         assert_eq!(actual.glyph_changes, expected.glyph_changes);
+        assert_eq!(actual.primary_rays, expected.primary_rays);
+        assert_eq!(actual.alternate_primary, expected.alternate_primary);
         assert_eq!(
             actual.mean_color_delta.to_bits(),
             expected.mean_color_delta.to_bits()
@@ -1681,7 +1855,7 @@ mod tests {
         for (a, b) in actual.previous_cells.iter().zip(&expected.previous_cells) {
             assert_eq!((a.0, a.1, a.2.to_bits()), (b.0, b.1, b.2.to_bits()));
             assert_eq!(a.3.map(f32::to_bits), b.3.map(f32::to_bits));
-            assert_eq!((a.4, a.5), (b.4, b.5));
+            assert_eq!((a.4, a.5, a.6), (b.4, b.5, b.6));
         }
     }
 
@@ -1783,6 +1957,278 @@ mod tests {
             assert!(x.iter().any(|c| c.glyph != 32));
             let (z, _) = a.compose(&SyntheticScene, c, 1., Stage::Cloth, 40, 24, 16. / 9.);
             assert!(x == z, "history must not change a frozen image");
+        }
+    }
+
+    fn sampling_camera() -> Camera {
+        Camera::with_view(
+            Mode::Overhead,
+            crate::camera::CameraView::new(Vec3::new(0., 0., 4.), Vec3::ZERO, 60., 1.).unwrap(),
+        )
+    }
+
+    // Nine isolated patches at the known sample positions of a 1x1 orthographic
+    // cell. Arbitrary depths/identities exercise semantic resolving and history.
+    struct SamplePatches {
+        hits: [Option<Hit>; 9],
+        queries: std::sync::atomic::AtomicUsize,
+        shades: std::sync::atomic::AtomicUsize,
+    }
+    impl SamplePatches {
+        fn empty() -> Self {
+            Self {
+                hits: [None; 9],
+                queries: std::sync::atomic::AtomicUsize::new(0),
+                shades: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn set(&mut self, index: usize, object: u32, material: u32, distance: f32, local_x: f32) {
+            let ray = sampling_camera()
+                .ray_sample(0, 0, 1, 1, 1., PRIMARY_OFFSETS[index])
+                .unwrap();
+            self.hits[index] = Some(Hit {
+                distance,
+                position: ray.origin + ray.dir * distance,
+                normal: Vec3::Z,
+                material,
+                object_id: object,
+                local: Vec3::new(local_x, 0., 0.),
+            });
+        }
+    }
+    impl Scene for SamplePatches {
+        fn trace(&self, ray: Ray, _: f32, _: Stage, _: bool) -> Option<Hit> {
+            self.queries
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // The independent geometric mapping is top-left to bottom-right,
+            // while sample index 0 belongs to the central patch.
+            let col = if ray.origin.x < -0.2 {
+                0
+            } else if ray.origin.x > 0.2 {
+                2
+            } else {
+                1
+            };
+            let row = if ray.origin.y > 0.2 {
+                0
+            } else if ray.origin.y < -0.2 {
+                2
+            } else {
+                1
+            };
+            self.hits[[1, 2, 3, 4, 0, 5, 6, 7, 8][row * 3 + col]]
+        }
+        fn light_position(&self, _: f32) -> Vec3 {
+            Vec3::Y
+        }
+        fn pigment(&self, _: u32) -> Vec3 {
+            self.shades
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Vec3::splat(0.7)
+        }
+        fn glyph(&self, _: u32, local: Vec3, _: Vec3, _: f32) -> u8 {
+            if local.x < 0.53 {
+                b'|'
+            } else {
+                b':'
+            }
+        }
+    }
+    fn sample_patch_frame(
+        composer: &mut Composer,
+        scene: &SamplePatches,
+    ) -> (GlyphCell, FrameStats) {
+        let (cells, stats) = composer.compose(scene, sampling_camera(), 0., Stage::Core, 1, 1, 1.);
+        (cells[0], stats)
+    }
+    fn conservative_composer() -> Composer {
+        let mut composer = Composer::default();
+        composer.set_primary_sampling(PrimarySampling::Conservative9);
+        composer
+    }
+
+    #[test]
+    fn conservative_resolve_has_exact_depth_ties_and_center_group_preference() {
+        let mut scene = SamplePatches::empty();
+        scene.set(0, 20, 35, 4., 0.52);
+        scene.set(1, 10, 34, 4., 0.52);
+        scene.set(3, 10, 33, 4., 0.52);
+        scene.set(6, 10, 33, 4., 0.52);
+        let mut composer = conservative_composer();
+        let (_, stats) = sample_patch_frame(&mut composer, &scene);
+        assert_eq!(
+            composer.previous_cells[0].6,
+            PrimaryHistory {
+                object: 10,
+                material: 33,
+                sample: 3,
+                coverage_mask: (1 << 3) | (1 << 6),
+            }
+        );
+        assert_eq!((stats.primary_rays, stats.alternate_primary), (9, 1));
+        assert_eq!(scene.queries.load(std::sync::atomic::Ordering::Relaxed), 9);
+        assert_eq!(scene.shades.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        // Center can represent the winning group even when its own patch is
+        // farther away; preserving its glyph/shading avoids interior shifts.
+        scene.set(0, 10, 33, 4.1, 0.52);
+        let (_, stats) = sample_patch_frame(&mut composer, &scene);
+        assert_eq!(composer.previous_cells[0].6.sample, 0);
+        assert_eq!(stats.alternate_primary, 0);
+
+        // No epsilon may merge distinct layers and let a lower ID win.
+        scene.set(0, 1, 33, f32::from_bits(4_f32.to_bits() + 1), 0.52);
+        sample_patch_frame(&mut composer, &scene);
+        assert_eq!(composer.previous_cells[0].6.object, 10);
+        assert_eq!(composer.previous_cells[0].6.sample, 3);
+    }
+
+    #[test]
+    fn conservative_invalid_depths_and_empty_cells_still_count_all_primary_queries() {
+        let mut scene = SamplePatches::empty();
+        for (index, depth) in [0., -1., f32::INFINITY, f32::NAN].into_iter().enumerate() {
+            scene.set(index, 10, 32, depth, 0.52);
+        }
+        let mut composer = conservative_composer();
+        let (cell, stats) = sample_patch_frame(&mut composer, &scene);
+        assert_eq!(cell, GlyphCell::default());
+        assert_eq!((stats.primary_rays, stats.alternate_primary), (9, 0));
+        assert_eq!(scene.queries.load(std::sync::atomic::Ordering::Relaxed), 9);
+        assert_eq!(scene.shades.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn conservative_history_releases_on_sample_or_coverage_mask_changes() {
+        for change_sample in [true, false] {
+            let mut scene = SamplePatches::empty();
+            scene.set(1, 10, 32, 3., 0.52);
+            scene.set(3, 10, 32, 4., 0.54);
+            let mut composer = conservative_composer();
+            let (first, _) = sample_patch_frame(&mut composer, &scene);
+            let before = composer.previous_cells[0].6;
+            if change_sample {
+                scene.set(1, 10, 32, 4., 0.52);
+                scene.set(3, 10, 32, 3., 0.54);
+            } else {
+                scene.hits[3] = None;
+                scene.set(1, 10, 32, 3., 0.54);
+            }
+            let (updated, stats) = sample_patch_frame(&mut composer, &scene);
+            let (fresh, _) = sample_patch_frame(&mut conservative_composer(), &scene);
+            let after = composer.previous_cells[0].6;
+            assert_eq!(
+                first.id, fresh.id,
+                "same surface bin isolates the extra history guard"
+            );
+            assert_ne!(first.glyph, fresh.glyph);
+            assert_eq!(updated, fresh);
+            assert_eq!(
+                stats.matched, 1,
+                "legacy matching statistics remain ID-only"
+            );
+            if change_sample {
+                assert_ne!(before.sample, after.sample);
+                assert_eq!(before.coverage_mask, after.coverage_mask);
+            } else {
+                assert_eq!(before.sample, after.sample);
+                assert_ne!(before.coverage_mask, after.coverage_mask);
+            }
+        }
+    }
+
+    #[test]
+    fn sampling_mode_change_resets_history_only_when_changed() {
+        let mut composer = Composer::with_threads(2).unwrap();
+        let pool = composer.pool.as_ref().unwrap() as *const rayon::ThreadPool;
+        assert_eq!(composer.primary_sampling(), PrimarySampling::Center);
+        let (legacy, _) = composer.compose(
+            &SyntheticScene,
+            Camera::new(Mode::Third),
+            0.,
+            Stage::Core,
+            9,
+            7,
+            1.,
+        );
+        composer.set_primary_sampling(PrimarySampling::Center);
+        assert_eq!(composer.previous_cells.len(), 63);
+        composer.set_primary_sampling(PrimarySampling::Conservative9);
+        assert!(composer.previous_cells.is_empty());
+        composer.compose(
+            &SyntheticScene,
+            Camera::new(Mode::Third),
+            0.,
+            Stage::Core,
+            9,
+            7,
+            1.,
+        );
+        composer.set_primary_sampling(PrimarySampling::Conservative9);
+        assert_eq!(composer.previous_cells.len(), 63);
+        composer.set_primary_sampling(PrimarySampling::Center);
+        assert!(composer.previous_cells.is_empty());
+        let (restored, stats) = composer.compose(
+            &SyntheticScene,
+            Camera::new(Mode::Third),
+            0.,
+            Stage::Core,
+            9,
+            7,
+            1.,
+        );
+        assert_eq!(restored, legacy);
+        assert_eq!((stats.primary_rays, stats.alternate_primary), (63, 0));
+        assert_eq!(
+            composer.pool.as_ref().unwrap() as *const rayon::ThreadPool,
+            pool
+        );
+        for sampling in [PrimarySampling::Center, PrimarySampling::Conservative9] {
+            assert_eq!(PrimarySampling::parse(sampling.name()), Some(sampling));
+        }
+        assert_eq!(PrimarySampling::parse("adaptive"), None);
+    }
+
+    #[test]
+    fn conservative_motion_is_worker_deterministic_and_static_history_is_exact() {
+        let mut serial = conservative_composer();
+        let mut parallel = Composer::with_threads(8).unwrap();
+        parallel.set_primary_sampling(PrimarySampling::Conservative9);
+        for mode in [Mode::First, Mode::Third, Mode::Overhead] {
+            serial.reset();
+            parallel.reset();
+            let mut previous = None;
+            for time in [0., 0., 0.5, 1.] {
+                let mut camera = Camera::new(mode);
+                camera.orbit = time * 0.1;
+                let (a, sa) = serial.compose(
+                    &SyntheticScene,
+                    camera,
+                    time,
+                    Stage::Cloth,
+                    17,
+                    11,
+                    16. / 9.,
+                );
+                let (b, sb) = parallel.compose(
+                    &SyntheticScene,
+                    camera,
+                    time,
+                    Stage::Cloth,
+                    17,
+                    11,
+                    16. / 9.,
+                );
+                assert_eq!(a, b);
+                assert_stats_bits(&sa, &sb);
+                assert_history_bits(&serial, &parallel);
+                assert_eq!(sa.primary_rays, 17 * 11 * 9);
+                if time == 0. {
+                    if let Some(first) = previous.as_ref() {
+                        assert_eq!(&a, first);
+                    }
+                    previous = Some(a);
+                }
+            }
         }
     }
 }
