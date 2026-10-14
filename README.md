@@ -21,6 +21,8 @@ R8 refines [wet-stone readability](WET_READABILITY.md): low-light glyph families
 
 R9 explores [worked and oxidized steel](METAL_STUDY.md) on the same analytic convex shield, with optional RGB conductor response. See [project status](PROJECT_STATUS.md) for verified capabilities, remaining limits and the source of truth for the website/documentation.
 
+R10 adds a [common-scene environment study](ENVIRONMENT_STUDY.md): stone, metal and animated cloth share a bounded environment-light and reflection contract. Run `Avvia-ambiente.cmd` on Windows, or `cargo run --locked --release --example environment_study -- --window --variant on`. The [engine path](ENGINE_PATH.md) sets the next gate: validated data-driven use from the independent client.
+
 [Quick start](#getting-started) · [How it renders](#rendering-approach) · [Captures and benchmarks](#captures-and-measurements) · [Contributing](#contributing) · [Report an issue](https://github.com/AndreaZero/ascii-engine-lab/issues)
 
 ## Rendering approach
@@ -49,6 +51,7 @@ Current capabilities include:
 - An analytic character, procedural idle motion and a deforming cloak.
 - Material-specific glyph patterns and conservative temporal stabilization.
 - Opt-in local albedo, shading normal, roughness, scalar Fresnel reflectance and occlusion, with footprint-aware glyph detail.
+- Optional analytic environment irradiance/radiance and a bounded local specular bounce, with explicit approximations.
 - Optional RGB conductor reflectance and metalness, with a dedicated worked/oxidized steel sample.
 - Configurable output resolution, character density and CPU worker budgets.
 - Windowed rendering, GPU PNG capture and reproducible measurements.
@@ -179,21 +182,23 @@ The demo prepares `LabScene::snapshot(time, stage)` once per composition. `Scene
 
 `Scene::local_materials` opts into the R7 path. `material_sample(hit, footprint)` supplies local surface properties; `glyph_sample` and `glyph_sample_key` share the same filtered structural classification. The default path preserves existing clients. This material API is experimental and is not yet exposed by Material Room's JSON format.
 
-R9 adds optional `metallic_sample(hit, footprint)` for the RGB conductor endpoint and metalness. `None` or zero metalness preserves the dielectric path. Pure metal has no diffuse component; environment reflections and anisotropy are not implemented. This extension is also outside Material Room's current JSON format.
+R9 adds optional `metallic_sample(hit, footprint)` for the RGB conductor endpoint and metalness. `None` or zero metalness preserves the dielectric path. Pure metal has no diffuse component. The R9 sample itself has no environment reflection; anisotropy remains unimplemented. This extension is also outside Material Room's current JSON format.
+
+R10 adds optional `environment_sample(EnvironmentQuery)` for analytic diffuse irradiance, directional specular radiance and a local query range. None preserves the prior path. Local reflections use one bounded bounce and roughness attenuation; diffuse visibility is a one-direction proxy. This is not complete IBL or GI. See [the measured common scene](ENVIRONMENT_STUDY.md).
 
 These contracts are still evolving. Material Room depends only on `ascii-render` and its own scene data. Its bounded, versioned JSON format is client-owned; it is not a universal asset format. Reserved water/emissive IDs, one point light, artistic ambient/fog response and laboratory camera/stage defaults remain API limitations. A stable SDK and broader hardware validation remain development goals.
 
 ## Limitations and next steps
 
 - One visibility sample per character cell can miss thin features and cause popping during camera movement.
-- Lighting uses an artistic ambient term and one point light. General multi-light rendering and global illumination are not implemented.
+- Lighting retains one point light, with either legacy ambient or the opt-in approximate environment path. General multi-light rendering and global illumination are not implemented.
 - Water uses a planar surface and one reflection bounce; refraction and fluid simulation are not implemented.
 - Cloth motion is procedural, with anchored regions and local deformation. It is not a physical cloth solver, and grazing intersections need further work.
 - Fire, general vegetation animation and destructible environments are future capabilities.
 - The project provides a small JSON editing/reload workflow; it does not yet provide gameplay systems, a visual editor, a general asset pipeline or networking.
 - Rendering queries currently run on the CPU. Further acceleration requires profiling and quality comparisons.
 
-The R7 stone specimen is the first richer surface experiment, with static/orbit/light/approach checks across three cell grids and views. It remains an authored block with shallow analytic cracks, filtered procedural grain and approximate wetness. Final art quality, silhouette antialiasing, richer content creation and broader hardware validation remain open. The next material studies can build on this contract without replacing all courtyard content at once.
+The R7 stone specimen is the first richer surface experiment, with static/orbit/light/approach checks across three cell grids and views. It remains an authored block with shallow analytic cracks, filtered procedural grain and approximate wetness. Final art quality, silhouette antialiasing, richer content creation and broader hardware validation remain open. The next product gate is data-driven use of the newer contracts in Material Room, followed by coverage/motion, dynamic updates and practical authoring/portability; see [ENGINE_PATH.md](ENGINE_PATH.md).
 
 ## Contributing
 

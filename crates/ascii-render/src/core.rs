@@ -79,6 +79,32 @@ pub struct MetallicSample {
     pub metalness: f32,
 }
 
+/// World-space request for an analytic environment, never a rendered image.
+/// Directions are normalized; roughness includes the cell-footprint floor.
+#[derive(Clone, Copy, Debug)]
+pub struct EnvironmentQuery {
+    pub hit: Hit,
+    pub normal: Vec3,
+    pub reflected_direction: Vec3,
+    pub roughness: f32,
+    pub time: f32,
+    pub stage: Stage,
+}
+
+/// Opt-in distant environment. Both colors are linear and contain neither
+/// albedo nor Fresnel. Irradiance is the integrated cosine-weighted hemisphere
+/// E (the renderer divides it by PI); specular radiance is an authored analytic
+/// directional filter at the requested roughness, not an exact GGX convolution.
+/// Finite channels are clamped to [0,16], invalid channels become zero.
+/// max_distance is the local visibility/reflection range in world units,
+/// clamped to [0,100]; zero/nonfinite disables local environment rays.
+#[derive(Clone, Copy, Debug)]
+pub struct EnvironmentSample {
+    pub diffuse_irradiance: Vec3,
+    pub specular_radiance: Vec3,
+    pub max_distance: f32,
+}
+
 /// Small replaceable producer contract, independent from the BLACKWATER fixture.
 /// Implementations used by Composer must be Sync and give deterministic answers
 /// for one tick/stage. Update simulation before composing, never inside a query.
@@ -110,10 +136,24 @@ pub trait Scene {
     /// Queried only for non-emissive local materials with material_sample=Some.
     /// None or zero metalness preserves the dielectric calculation exactly.
     /// Finite values are clamped; nonfinite metalness becomes zero and nonfinite
-    /// f0 channels use the sanitized dielectric f0. Pure metal has no ambient
-    /// contribution: without specular environment lighting it is black in Core
+    /// f0 channels use the sanitized dielectric f0. Pure metal has no diffuse
+    /// ambient contribution: without specular environment it is black in Core
     /// and in shadow. Producers must return deterministic answers per snapshot.
     fn metallic_sample(&self, _hit: Hit, _footprint: f32) -> Option<MetallicSample> {
+        None
+    }
+    /// Local materials only. None preserves the R9 arithmetic exactly. Some
+    /// replaces the old artistic ambient. The renderer uses one geometric-normal
+    /// visibility ray as a coarse diffuse proxy (not hemispherical AO) and one
+    /// reflected ray, with at most one secondary direct-light shadow query.
+    /// Secondary shading has diffuse environment + direct light, no further
+    /// environment rays/specular bounces. Rough local reflections are a weighted
+    /// single-ray approximation, not a filtered multi-ray reflection integral.
+    /// A local hit replaces distant radiance completely; its contribution is
+    /// attenuated by (1-roughness)^2. Rough local reflections can thus be too dark.
+    /// Queries must be deterministic for the immutable snapshot. As with other
+    /// material changes, callers reset Composer history when toggling this mode.
+    fn environment_sample(&self, _query: EnvironmentQuery) -> Option<EnvironmentSample> {
         None
     }
     fn glyph_sample(&self, hit: Hit, illumination: f32, _footprint: f32) -> u8 {

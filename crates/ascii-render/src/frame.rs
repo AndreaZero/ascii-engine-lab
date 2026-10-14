@@ -340,9 +340,26 @@ fn shade_material(
     stage: Stage,
     lighting: &PreparedLighting,
 ) -> Vec3 {
+    shade_material_depth(
+        scene, hit, sample, view, footprint, time, stage, lighting, true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn shade_material_depth(
+    scene: &impl Scene,
+    hit: Hit,
+    sample: MaterialSample,
+    view: Vec3,
+    footprint: f32,
+    time: f32,
+    stage: Stage,
+    lighting: &PreparedLighting,
+    primary: bool,
+) -> Vec3 {
     // Keep the dielectric arithmetic below untouched when the extension is
     // absent/zero. RGB Schlick is an approximation to conductor Fresnel, not
-    // PBRT's spectral eta/k response; there is no specular environment term.
+    // PBRT's spectral eta/k response. Environment is a separate opt-in path.
     let metallic = scene.metallic_sample(hit, footprint).and_then(|sample| {
         let metalness = unit_value(sample.metalness, 0.);
         (metalness > 0.).then_some(MetallicSample {
@@ -365,6 +382,10 @@ fn shade_material(
     } else {
         ambient
     };
+    let ambient = environment_ambient(
+        scene, hit, sample, metallic, n, view, footprint, time, stage, lighting, primary,
+    )
+    .unwrap_or(ambient);
     if stage == Stage::Core {
         return ambient;
     }
@@ -436,6 +457,137 @@ fn shade_material(
     ambient + (diffuse + specular) * light * (no_l * attenuation * occlusion)
 }
 
+fn environment_color(color: Vec3) -> Vec3 {
+    Vec3::from_array(
+        color
+            .to_array()
+            .map(|v| if v.is_finite() { v.clamp(0., 16.) } else { 0. }),
+    )
+}
+
+// The diffuse E/PI and Fresnel material split follow the indirect-lighting
+// distinction in https://google.github.io/filament/main/filament.html.
+// This deliberately bounded approximation is NOT Filament's split-sum IBL:
+// no integrated DFG, GGX convolution, multi-scattering or hemispherical AO.
+#[allow(clippy::too_many_arguments)]
+fn environment_ambient(
+    scene: &impl Scene,
+    hit: Hit,
+    sample: MaterialSample,
+    metallic: Option<MetallicSample>,
+    normal: Vec3,
+    view: Vec3,
+    footprint: f32,
+    time: f32,
+    stage: Stage,
+    lighting: &PreparedLighting,
+    primary: bool,
+) -> Option<Vec3> {
+    let view = view.normalize_or_zero();
+    let reflected = (2. * view.dot(normal) * normal - view).normalize_or_zero();
+    let floor = (0.16 + footprint.max(0.) * 2.).clamp(0.16, 0.65);
+    let roughness = unit_value(sample.roughness, 1.).max(floor);
+    let environment = scene.environment_sample(EnvironmentQuery {
+        hit,
+        normal,
+        reflected_direction: reflected,
+        roughness,
+        time,
+        stage,
+    })?;
+    let max_distance = if environment.max_distance.is_finite() {
+        environment.max_distance.clamp(0., 100.)
+    } else {
+        0.
+    };
+    let dielectric = unit_value(sample.f0, 0.04);
+    let metalness = metallic.map_or(0., |m| m.metalness);
+    let f0 = metallic.map_or(Vec3::splat(dielectric), |m| {
+        Vec3::splat(dielectric) * (1. - m.metalness)
+            + Vec3::from_array(m.f0.to_array().map(|v| unit_value(v, dielectric))) * m.metalness
+    });
+    let fresnel = f0 + (Vec3::ONE - f0) * (1. - normal.dot(view).clamp(0., 1.)).powi(5);
+    let albedo = Vec3::from_array(sample.albedo.to_array().map(|v| unit_value(v, 0.)));
+    let mut diffuse = albedo
+        * (Vec3::ONE - fresnel)
+        * environment_color(environment.diffuse_irradiance)
+        * ((1. - metalness) / std::f32::consts::PI);
+    let origin = hit.position + hit.normal * 0.012;
+    // A single normal visibility sample, explicitly not a hemisphere integral.
+    // trace rather than legacy occluded: even emissive surfaces block distant E.
+    if primary
+        && max_distance > 0.
+        && diffuse.max_element() > 0.
+        && scene
+            .trace(
+                Ray {
+                    origin,
+                    dir: hit.normal,
+                },
+                time,
+                stage,
+                false,
+            )
+            .is_some_and(|h| h.distance > 0. && h.distance < max_distance)
+    {
+        diffuse = Vec3::ZERO;
+    }
+    let occlusion = unit_value(sample.occlusion, 1.);
+    if !primary {
+        return Some(diffuse * occlusion);
+    }
+    // A decorative normal may not send the reflected ray into the geometric
+    // back face. The geometric offset remains unchanged by material relief.
+    if reflected.dot(hit.normal) <= 0. || normal.dot(view) <= 0. {
+        return Some(diffuse * occlusion);
+    }
+    let mut radiance = environment_color(environment.specular_radiance);
+    if max_distance > 0. && fresnel.max_element() > 0. {
+        if let Some(other) = scene
+            .trace(
+                Ray {
+                    origin,
+                    dir: reflected,
+                },
+                time,
+                stage,
+                false,
+            )
+            .filter(|h| h.distance > 0. && h.distance < max_distance)
+        {
+            // A footprint cone heuristic, not curved-surface ray differentials.
+            let secondary_width =
+                footprint.max(0.0001) * (1. + other.distance / hit.distance.max(0.0001));
+            let bounced = if other.material != EMISSIVE {
+                if let Some(material) = scene.material_sample(other, secondary_width) {
+                    shade_material_depth(
+                        scene,
+                        other,
+                        material,
+                        -reflected,
+                        secondary_width,
+                        time,
+                        stage,
+                        lighting,
+                        false,
+                    )
+                } else {
+                    shade(scene, other, time, stage, lighting)
+                }
+            } else {
+                shade(scene, other, time, stage, lighting)
+            };
+            // A local hit exclusively replaces the distant source. Attenuation
+            // with roughness avoids claiming this sharp ray is a GGX integral,
+            // but loses energy and may be too dark. Never leak distant light
+            // through an occluder by blending it back into the local result.
+            let local_weight = (1. - roughness).powi(2);
+            radiance = bounced * local_weight;
+        }
+    }
+    Some((diffuse + fresnel * radiance) * occlusion)
+}
+
 fn shade(
     scene: &impl Scene,
     hit: Hit,
@@ -503,6 +655,276 @@ pub fn overlay(cells: &mut [GlyphCell], cols: u32, rows: u32, text: &str) {
 mod tests {
     use super::*;
     use crate::camera::Mode;
+
+    struct EnvironmentProbe {
+        environment: Option<EnvironmentSample>,
+        metal: Option<MetallicSample>,
+        blocker: u8,
+        rays: std::sync::atomic::AtomicUsize,
+    }
+    impl EnvironmentProbe {
+        fn open() -> Self {
+            Self {
+                environment: Some(EnvironmentSample {
+                    diffuse_irradiance: Vec3::splat(std::f32::consts::PI * 0.25),
+                    specular_radiance: Vec3::new(0.2, 0.4, 0.8),
+                    max_distance: 5.,
+                }),
+                metal: None,
+                blocker: 0,
+                rays: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn ray_count(&self) -> usize {
+            self.rays.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+    impl Scene for EnvironmentProbe {
+        fn trace(&self, ray: Ray, _: f32, _: Stage, primary: bool) -> Option<Hit> {
+            if primary {
+                return Some(Hit {
+                    position: ray.origin + ray.dir,
+                    normal: -ray.dir,
+                    ..local_hit()
+                });
+            }
+            self.rays.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (self.blocker != 0).then_some(Hit {
+                distance: 2.,
+                position: ray.origin + ray.dir * 2.,
+                normal: -ray.dir,
+                material: if self.blocker == 1 { EMISSIVE } else { 78 },
+                object_id: 92,
+                ..local_hit()
+            })
+        }
+        fn light_position(&self, _: f32) -> Vec3 {
+            Vec3::Z * 2.
+        }
+        fn pigment(&self, _: u32) -> Vec3 {
+            Vec3::splat(0.3)
+        }
+        fn glyph(&self, _: u32, _: Vec3, _: Vec3, _: f32) -> u8 {
+            b'#'
+        }
+        fn local_materials(&self) -> bool {
+            true
+        }
+        fn material_sample(&self, hit: Hit, _: f32) -> Option<MaterialSample> {
+            Some(MaterialSample {
+                normal: hit.normal,
+                f0: 0.,
+                albedo: if self.blocker == 3 && hit.object_id == 92 {
+                    Vec3::ZERO
+                } else {
+                    Vec3::splat(0.3)
+                },
+                ..local_sample()
+            })
+        }
+        fn metallic_sample(&self, hit: Hit, _: f32) -> Option<MetallicSample> {
+            (hit.material == 77).then_some(self.metal).flatten()
+        }
+        fn environment_sample(&self, query: EnvironmentQuery) -> Option<EnvironmentSample> {
+            assert!(query.normal.is_finite() && query.reflected_direction.is_finite());
+            assert!((0.16..=1.).contains(&query.roughness));
+            self.environment
+        }
+        fn light_color(&self) -> Vec3 {
+            Vec3::ONE
+        }
+    }
+
+    #[test]
+    fn environment_none_preserves_local_and_conductor_bits_without_extra_rays() {
+        for metal in [
+            None,
+            Some(MetallicSample {
+                f0: Vec3::splat(0.7),
+                metalness: 1.,
+            }),
+        ] {
+            let scene = EnvironmentProbe {
+                environment: None,
+                metal,
+                ..EnvironmentProbe::open()
+            };
+            let old = metal_probe(metal);
+            for stage in [Stage::Core, Stage::Light] {
+                for view in [Vec3::Z, Vec3::new(0.6, 0., 0.8)] {
+                    let a = sample_color(&scene, local_sample(), view, 0.01, stage);
+                    let b = sample_color(&old, local_sample(), view, 0.01, stage);
+                    assert_eq!(
+                        a.to_array().map(f32::to_bits),
+                        b.to_array().map(f32::to_bits)
+                    );
+                }
+            }
+            assert_eq!(scene.ray_count(), 2, "only the two direct shadows");
+        }
+    }
+
+    #[test]
+    fn environment_conductor_uses_colored_radiance_without_diffuse_or_legacy_ambient() {
+        let scene = EnvironmentProbe {
+            metal: Some(MetallicSample {
+                f0: Vec3::new(0.8, 0.6, 0.3),
+                metalness: 1.,
+            }),
+            ..EnvironmentProbe::open()
+        };
+        let a = sample_color(&scene, local_sample(), Vec3::Z, 0.01, Stage::Core);
+        let expected = Vec3::new(0.8, 0.6, 0.3) * scene.environment.unwrap().specular_radiance;
+        assert!((a - expected).abs().max_element() < 1e-6);
+        let b = sample_color(
+            &scene,
+            MaterialSample {
+                albedo: Vec3::ONE,
+                ..local_sample()
+            },
+            Vec3::Z,
+            0.01,
+            Stage::Core,
+        );
+        assert_eq!(a, b);
+        assert_eq!(
+            scene.ray_count(),
+            2,
+            "one specular query per sample; no metal diffuse rays"
+        );
+    }
+
+    #[test]
+    fn environment_normal_visibility_blocks_diffuse_even_with_emissive_blocker() {
+        let open = EnvironmentProbe::open();
+        let blocked = EnvironmentProbe {
+            blocker: 1,
+            ..EnvironmentProbe::open()
+        };
+        let material = MaterialSample {
+            f0: 0.,
+            ..local_sample()
+        };
+        let a = sample_color(&open, material, Vec3::Z, 0.01, Stage::Core);
+        let b = sample_color(&blocked, material, Vec3::Z, 0.01, Stage::Core);
+        assert!((a - Vec3::splat(0.075)).abs().max_element() < 1e-6);
+        assert_eq!(b, Vec3::ZERO);
+        assert_eq!(open.ray_count(), 1);
+        assert_eq!(blocked.ray_count(), 1);
+    }
+
+    #[test]
+    fn environment_reflects_local_surface_once_and_bounds_roughness_blend() {
+        let scene = EnvironmentProbe {
+            metal: Some(MetallicSample {
+                f0: Vec3::ONE,
+                metalness: 1.,
+            }),
+            blocker: 2,
+            ..EnvironmentProbe::open()
+        };
+        let material = MaterialSample {
+            roughness: 0.25,
+            ..local_sample()
+        };
+        let a = sample_color(&scene, material, Vec3::Z, 0.01, Stage::Core);
+        let distant = scene.environment.unwrap().specular_radiance;
+        let expected = Vec3::splat(0.075) * 0.75_f32.powi(2);
+        assert!((a - expected).abs().max_element() < 1e-6);
+        assert_eq!(
+            scene.ray_count(),
+            1,
+            "secondary must not trace environment or recurse"
+        );
+        let rough = sample_color(
+            &scene,
+            MaterialSample {
+                roughness: 1.,
+                ..material
+            },
+            Vec3::Z,
+            0.01,
+            Stage::Core,
+        );
+        assert_ne!(distant, Vec3::ZERO);
+        assert_eq!(rough, Vec3::ZERO);
+    }
+
+    #[test]
+    fn environment_black_local_blocker_never_leaks_distant_sky() {
+        let scene = EnvironmentProbe {
+            metal: Some(MetallicSample {
+                f0: Vec3::ONE,
+                metalness: 1.,
+            }),
+            blocker: 3,
+            ..EnvironmentProbe::open()
+        };
+        for roughness in [0., 0.25, 0.7, 1.] {
+            let color = sample_color(
+                &scene,
+                MaterialSample {
+                    roughness,
+                    ..local_sample()
+                },
+                Vec3::Z,
+                0.01,
+                Stage::Core,
+            );
+            assert_eq!(color, Vec3::ZERO);
+        }
+        assert_eq!(scene.ray_count(), 4);
+    }
+
+    #[test]
+    fn environment_invalid_inputs_are_finite_and_disabled_range_traces_nothing() {
+        let scene = EnvironmentProbe {
+            environment: Some(EnvironmentSample {
+                diffuse_irradiance: Vec3::new(f32::NAN, -1., f32::INFINITY),
+                specular_radiance: Vec3::new(f32::NAN, -1., f32::INFINITY),
+                max_distance: f32::NAN,
+            }),
+            ..EnvironmentProbe::open()
+        };
+        let a = sample_color(
+            &scene,
+            MaterialSample {
+                roughness: f32::NAN,
+                normal: Vec3::ZERO,
+                f0: f32::NAN,
+                ..local_sample()
+            },
+            Vec3::Z,
+            0.01,
+            Stage::Core,
+        );
+        assert_eq!(a, Vec3::ZERO);
+        assert_eq!(scene.ray_count(), 0);
+    }
+
+    #[test]
+    fn environment_cells_and_history_are_worker_deterministic() {
+        let scene = EnvironmentProbe {
+            blocker: 2,
+            ..EnvironmentProbe::open()
+        };
+        for mode in [Mode::First, Mode::Third, Mode::Overhead] {
+            let mut serial = Composer::default();
+            let mut parallel = Composer::with_threads(4).unwrap();
+            for time in [0., 0., 1.] {
+                let (a, sa) =
+                    serial.compose(&scene, Camera::new(mode), time, Stage::Cloth, 9, 7, 1.);
+                let (b, sb) =
+                    parallel.compose(&scene, Camera::new(mode), time, Stage::Cloth, 9, 7, 1.);
+                assert_eq!(
+                    bytemuck::cast_slice::<GlyphCell, u8>(&a),
+                    bytemuck::cast_slice::<GlyphCell, u8>(&b)
+                );
+                assert_stats_bits(&sa, &sb);
+                assert_history_bits(&serial, &parallel);
+            }
+        }
+    }
 
     #[derive(Clone, Copy)]
     struct LocalProbe {

@@ -10,8 +10,12 @@
 //! its existing observer poses. Other named material constants are legacy IDs,
 //! not a universal material system. Local materials can supply albedo, shading
 //! normal, roughness, scalar F0 and occlusion; legacy scenes retain their prior
-//! response. Lighting still has one point source and artistic ambient/fog;
-//! water retains its specialized path. This is not yet a stable material API.
+//! response. R10 adds opt-in analytic environment irradiance/radiance and a
+//! bounded single local reflection. Its one-direction diffuse visibility and
+//! rough-reflection blend are approximations, not global illumination or full
+//! IBL. Lighting retains one point source and artistic fog; legacy ambient is
+//! unchanged without the opt-in. Water retains its specialized path. These
+//! contracts remain experimental rather than a stable material API.
 
 pub mod budget;
 pub mod camera;

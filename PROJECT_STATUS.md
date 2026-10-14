@@ -1,6 +1,6 @@
 # Project status — source for the website and documentation
 
-Updated 13 October 2026. This repository is the source of truth for the ASCII engine laboratory. Website copy should link to the corresponding source revision and report; an experiment in progress is not a released capability.
+Updated 14 October 2026. This repository is the source of truth for the ASCII engine laboratory. Website copy should link to the corresponding source revision and report; an experiment in progress is not a released capability.
 
 ## What this project is
 
@@ -19,11 +19,12 @@ A reusable renderer under development in Rust + wgpu. Spatial queries produce ch
 | Stone | Analytic carved stone, dry/wet local material and filtered glyph detail | [Stone study](STONE_STUDY.md); stylized surface, not the final art target |
 | Wet readability, R8 | More legible grain in half shadows through glyph selection | [Wet readability](WET_READABILITY.md), source revision `395fd27`; same cell RGB, geometry and lighting; specular response unchanged |
 | Metal, R9 | Analytic convex shield, worked/oxidized steel and optional RGB conductor response | [Metal study](METAL_STUDY.md); verified three-view captures and backend parity, stylized material, no environment reflections or anisotropy |
+| Common scene/environment, R10 | Optional irradiance/radiance contract and one local reflection bounce; stone, metal and animated cape together | [Environment study](ENVIRONMENT_STUDY.md); bounded proxies, three-view captures, legacy parity; not full GI or final artwork |
 | CPU configuration | Serial path and configurable private worker pool, explicit density profiles | [Performance](PERFORMANCE.md), [portability](PORTABILITY.md); one machine does not establish minimum system requirements |
 
 ## Work in progress
 
-R9 has completed its bounded runtime study. Its report and this status are versioned with the implementation; use their containing Git revision when citing the result. The next planned study concerns environment lighting/reflections and a common scene with stone, metal and cloth. Those extensions are not implemented in R9. Do not use implementation drafts as proof of completion.
+R10 has completed its bounded runtime study. Reports and status are versioned with the implementation; cite their containing Git revision. The next proposed gate is an alpha consumable by another project: expose the local material/conductor/environment contracts through validated client-owned data in Material Room. This is not yet implemented. See [the engine development path](ENGINE_PATH.md) for exit criteria and the distinction between core development and sample artwork.
 
 Fire, richer water dynamics, destructible environments, gameplay integration, more content and tools remain separate future work. Their inclusion in the design does not imply implementation.
 
@@ -35,11 +36,13 @@ R8 CPU-only composition at 240×135 glyphs and 8 workers had median p50 values o
 
 R9 CPU-only median p50 values span 4.40–6.35 ms across the two finishes and three views with 8 workers. The 16.7 ms exploratory p95 budget was exceeded in 2/18 CPU runs, 19/72 matrix cases and 5/6 full recordings. Host activity was not isolated. Verification PASS means the recorded checks succeeded, not that every performance target or the visual ambition has been reached.
 
+R10 common-scene CPU-only medians with 8 workers are 6.34 / 7.36 / 7.55 ms with environment enabled, versus 4.45 / 4.14 / 4.02 ms without it (first/third/overhead, 240�135). No 8-worker CPU run exceeded the exploratory p95 budget; one of 72 matrix cases did (off path, 18.50 ms). The three motion runs did not. These are different contents from R9, not a direct optimization comparison. New transport remains a one-ray diffuse-visibility and one-bounce specular approximation, with rough local reflections potentially too dark or sharp.
+
 ## Website/documentation coordination
 
 The engine coordinator owns this status file, engine source and verification reports. The website project owns page structure, layout, navigation and presentation. Link technical claims to reports and label each capability as verified, experimental or planned. Preserve the distinction between intended visual quality and achieved quality.
 
-No website repository or conversation identifier is currently available to the engine tools: the user is working in an internal side conversation. Direct two-way synchronization has not been established. This file is the common handoff; the website can read the local repository or the published version. The engine coordinator will update it with each verified milestone. No autonomous watcher or schedule is configured.
+The separate website repository is now identified as [ascii-engine-website](https://github.com/AndreaZero/ascii-engine-website). Its local checkout is `ascii-engine-site`, beside this engine checkout. Website content reads a committed engine snapshot; it requires explicit catalogue/snapshot refresh and publication to update the live site. The user reports the site online; local content verification is not verification of the deployed revision. Direct contact with its internal side conversation has not been established. No autonomous watcher or schedule is configured.
 
 Generated captures and movies remain local and are excluded from Git, as are private visual references. The website should not promise downloadable binaries or embed unavailable media. Request a specific delivery of selected original captures when needed; do not publish the user's reference screenshots as project assets.
 
