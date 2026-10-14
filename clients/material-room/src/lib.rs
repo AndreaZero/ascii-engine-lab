@@ -1,5 +1,7 @@
 //! Independently authored content for the reusable ASCII renderer.
 //! No BLACKWATER fixture, actor, runtime, or image texture is loaded here.
+pub mod authoring;
+pub mod authoring_camera;
 pub mod content;
 pub mod coverage_study;
 pub mod runtime;

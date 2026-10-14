@@ -4,6 +4,29 @@ Questa applicazione dipende da `ascii-render`, non da `ascii-engine-lab`. Carica
 
 R14 aggiunge [transazioni di occupazione](#occupazione-dinamica-r14) nel client: inserimento, rimozione e trasformazione assoluta, con identità di istanza e snapshot precedenti immutabili. L'API e la timeline `--updates` sono verificate con test, ricostruzione indipendente e runtime nelle tre viste. Il [report R14](../../DYNAMIC_OCCUPANCY.md) riporta risultati e limiti di costo, distinti dalla qualità artistica.
 
+## Authoring pratico R15
+
+`author` crea e modifica un progetto JSON unico con scena v2, timeline v1 e
+controlli indipendenti delle tre camere. `--project` lo apre nell'anteprima:
+Tab seleziona gli oggetti iniziali, frecce/PagSu/PagGiù li spostano, Ctrl+D
+duplica, Canc rimuove e Ctrl+S salva. I tasti 1/2/3 conservano le camere;
+ogni modifica alla scena riparte in pausa al tick 0. R rifiuta di ricaricare
+modifiche non salvate; Esc e la chiusura le proteggono, Maiusc+Esc le scarta
+esplicitamente. Non c'è salvataggio automatico.
+
+```sh
+cargo build --locked --release -p ascii-material-room --bins
+cargo run --locked --release -p ascii-material-room --bin author -- new my-room.json
+cargo run --locked --release -p ascii-material-room -- --project my-room.json
+```
+
+La [guida di authoring](AUTHORING.md) contiene comandi create/import/inspect,
+modifiche di oggetti/materiali/camere, una patch coordinata con gli eventi,
+salvataggio e conflitti. Tutti gli eventi futuri vengono validati prima di
+accettare un candidato. Il progetto salva i dati iniziali, non lo stato dopo
+il playback; non aggiunge un editor universale. Per le verifiche R15
+consultare [PROJECT_STATUS](../../PROJECT_STATUS.md) per i risultati confermati.
+
 ## Query R13
 
 R13 verifica un helper box con limite esatto, ma la sua integrazione sperimentale
@@ -35,7 +58,7 @@ cargo run --locked --release -p ascii-material-room -- --scene clients/material-
 
 La prima compilazione richiede accesso a crates.io o dipendenze già in cache. `--offline` serve solo con cache completa. Windows MSVC richiede i Build Tools C++; runtime verificato sullo sviluppo Windows x64, AMD RX 6700 XT, Vulkan e DX12. Altri sistemi/hardware non sono ancora collaudati. Un checkout pulito sulla stessa macchina verifica la guida, non una seconda piattaforma. Requisiti e limiti GPU sono in [PORTABILITY](../../PORTABILITY.md). `--validate` termina dopo il caricamento e non richiede una GPU o una finestra.
 
-Il default CLI e `Avvia-materiali.cmd` rimangono sul campione v1; per v2 passare esplicitamente `--scene clients/material-room/assets/material-room-v2.json`. Il launcher Windows costruisce il programma solo se manca. Dopo modifiche al codice ricompilare; dopo modifiche al JSON basta **R**. Se si copia l'eseguibile altrove, passare `--scene` con il percorso del JSON: il percorso predefinito è quello del checkout usato nella compilazione. L'atlante dei caratteri è incorporato, non richiede file font esterni.
+Il default CLI e `Avvia-materiali.cmd` rimangono sul campione v1; per v2 passare esplicitamente `--scene clients/material-room/assets/material-room-v2.json` oppure aprire un progetto con `--project`. Il launcher Windows costruisce il programma solo se manca. Dopo modifiche al codice ricompilare; dopo modifiche al JSON basta **R**, salvo modifiche non salvate in un progetto. Il default CLI v1 e l'atlante dei caratteri sono incorporati: un eseguibile spostato non legge il checkout usato nella compilazione e non richiede file font esterni. Per contenuti propri passare il percorso di `--scene` o `--project`.
 
 Su Windows, [Avvia-alpha.cmd](../../Avvia-alpha.cmd) avvia direttamente v2 e ricompila sempre con `--locked --release`, così l'eseguibile segue i sorgenti correnti. Accetta gli stessi argomenti aggiuntivi della CLI.
 

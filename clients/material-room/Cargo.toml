@@ -2,6 +2,7 @@
 name = "ascii-material-room"
 version = "0.1.0"
 edition = "2021"
+default-run = "ascii-material-room"
 description = "Independent, data-driven client of the experimental ASCII renderer"
 license = "MIT"
 

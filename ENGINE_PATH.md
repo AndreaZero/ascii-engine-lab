@@ -74,20 +74,25 @@ selective history invalidation or a faster spatial index. Publication currently
 clones and validates a bounded document at each event; its cost is reported
 separately and included in total CPU cost. General geometry/motion/cost stays open.
 
-Next bounded work should address practical creation and portability for this
-supported subset: create, preview, reload, save and reopen a scene/update sequence
-without core edits, then package and verify it on another physical machine.
-Define the usable subset and its exit evidence before implementation; a complete
-editor is not required. Another machine remains an external validation gap, not
-something a clean checkout or fewer workers can emulate. Continue measuring at
-fixed density and preserve the failed R13 acceleration result. No new writer or
+[R15](AUTHORING_PORTABILITY.md) delivers practical creation for this supported
+subset: a self-contained scene/update/camera project, validated CLI edits,
+native preview controls and protected save/reopen without core edits. Camera
+controls preserve exact rays rather than baking rounded world-space poses.
+The relocatable Windows package includes both clients and a diagnostic probe;
+it still requires the MSVC runtime/UCRT. This is a bounded authoring tool, not
+a complete editor or savegame system. The combined gate remains partial:
+another physical machine is still an external validation gap, not something
+a clean checkout, relocation or fewer workers can emulate. Consume that probe
+on another physical host, then address demonstrated failures and declare the
+BLACKWATER V1 subset before broader integration. Continue measuring at fixed
+density and preserve the failed R13 acceleration result. No new writer or
 future tranche is assigned automatically by this document.
 
 | Gate | Engineering work | Evidence needed to close it |
 | --- | --- | --- |
 | Geometry coverage and motion | R12 opt-in primary sampling and R13 exact bounded-helper experiment verified; runtime integration rejected for cost, linear traversal retained, sample gaps and foreground dilation remain | Preserve R11/R12 scene/path and tie semantics, dense-reference coverage, three-view motion and CPU/window pacing without hidden quality reductions |
 | Dynamic scene updates — bounded gate closed in R14 | Client-owned atomic occupancy changes and lifetime handles; global history epoch | Independent query/cell reconstruction, retained snapshots, rollback/anti-ABA, three-view replay and separate update cost; no physics or selective invalidation implied |
-| Practical creation and portability | Preview/reload/save for the supported content subset; useful controls rather than a full editor | A new scene can be created and reopened without core edits; documented package and execution on another physical machine |
+| Practical creation and portability — partial after R15 | Validated create/edit/preview/reload/save/reopen and relocatable Windows package/probe for the supported subset | Local authoring and relocation evidence; execution on another physical machine still required |
 | V1 for a declared BLACKWATER subset | Fix supported scenes, actors, effects, distances, quality and hardware budget | A client supplies its state through documented APIs and the complete agreed workload passes; gameplay integration needs its own authorized task |
 
 Fire, richer water, smoke/transparency and destructible environments require

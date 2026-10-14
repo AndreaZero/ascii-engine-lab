@@ -1,5 +1,7 @@
 # R3 — portabilità, budget e snapshot
 
+> R15: [practical authoring and Windows package](AUTHORING_PORTABILITY.md) adds self-contained projects, embedded defaults, relative launchers, hashes and a probe without a toolchain. VCRUNTIME140/UCRT remain prerequisites. Another physical host is still unverified; relocation on the same PC is not a substitute. Earlier tranche results below remain historical.
+
 Il processore della regia è una macchina di misura, non un requisito del motore. Questa tranche rende esplicita la gestione delle risorse e prepara una prova riproducibile su altri computer. Non certifica hardware che non è stato eseguito.
 
 ## Implementato

@@ -1,5 +1,7 @@
 //! A separate host: content files and application state belong to this client.
 use ascii_material_room::{
+    authoring::{Project, ProjectFile},
+    authoring_camera::CameraBank,
     content::SceneDocument,
     coverage_study::coverage_camera,
     runtime::RuntimeSnapshot,
@@ -50,6 +52,8 @@ struct Options {
     coverage_path: bool,
     cpu_only: bool,
     updates: Option<PathBuf>,
+    project: Option<PathBuf>,
+    project_data: Option<Project>,
 }
 impl Options {
     fn read() -> Result<Self> {
@@ -60,7 +64,8 @@ impl Options {
     }
     fn parse(mut args: impl Iterator<Item = String>, capacity: usize) -> Result<Self> {
         let mut o = Self {
-            scene: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/material-room.json"),
+            // Embedded compatible sample: moved executables never read the build checkout.
+            scene: PathBuf::new(),
             output: "evidence/material-room".into(),
             profile: Profile::Balanced,
             workers: 1,
@@ -78,6 +83,8 @@ impl Options {
             coverage_path: false,
             cpu_only: false,
             updates: None,
+            project: None,
+            project_data: None,
         };
         let mut requested = None;
         while let Some(arg) = args.next() {
@@ -89,6 +96,7 @@ impl Options {
                     o.headless = true;
                 }
                 "--help" => {
+                    println!("R15: --project FILE opens a self-contained authoring project (exclusive with --scene/--updates). Create with author new FILE. Window: Tab select object, arrows/PgUp/PgDown move 0.1, Ctrl+D duplicate, Delete remove, Ctrl+S save, F5 restart preview. Project cameras persist per view; R rejects reload while unsaved. Close never auto-saves. Materials/forms/timeline: author apply FILE PATCH.json. No scripted camera path in project window.");
                     println!("R14: --updates FILE replays validated occupancy transactions at absolute 30 Hz ticks. R reloads scene and updates atomically, restarting their clock.");
                     println!("R12: --sampling center|conservative9 (default center)\n--camera-path static|coverage (6-second deterministic path)\n--cpu-only: CPU measurement without GPU/captures, implies --headless\nWindow: C toggles sampling, P toggles scripted path; metrics saved to --output/window-run.json");
                     println!("ASCII MATERIAL ROOM\n--scene FILE --validate\n--headless --camera first|third|overhead|all --frames N --time SECONDS --output DIR\n--sequence N: capture every frame at 30 simulation ticks/s\n--orbit-speed RADIANS_PER_SECOND: headless camera motion (default 0)\n--profile economy|balanced|detail --workers auto|N --backend auto|vulkan|dx12|metal|gl\n--seconds N: window smoke duration\nWindow: 1/2/3 view, Q/E rotate, WASD move, Z/X height, Space pause, R reload scene and camera, H labels, Esc exit.\nThe default scene is the compatible v1 sample; pass --scene clients/material-room/assets/material-room-v2.json for local materials/environment and authored cameras.");
@@ -100,6 +108,7 @@ impl Options {
                         .ok_or_else(|| format!("{arg} requires a value"))?;
                     match arg.as_str() {
                         "--scene" => o.scene = value.into(),
+                        "--project" => o.project = Some(value.into()),
                         "--updates" => o.updates = Some(value.into()),
                         "--output" => o.output = value.into(),
                         "--profile" => {
@@ -171,6 +180,15 @@ impl Options {
         if o.cpu_only && o.sequence {
             return Err("--cpu-only cannot capture --sequence".into());
         }
+        if o.project.is_some() && (!o.scene.as_os_str().is_empty() || o.updates.is_some()) {
+            return Err("--project is exclusive with --scene and --updates".into());
+        }
+        if o.project.is_some() && o.coverage_path && !o.headless {
+            return Err(
+                "project window saves authored cameras; --camera-path coverage is headless only"
+                    .into(),
+            );
+        }
         Ok(o)
     }
     fn camera_at(&self, base: Camera, elapsed: f32) -> Camera {
@@ -189,6 +207,25 @@ impl Options {
         }
     }
 }
+fn load_document(o: &mut Options) -> Result<SceneDocument> {
+    if let Some(path) = &o.project {
+        let project = Project::load(path)?;
+        let doc = project.document().clone();
+        o.project_data = Some(project);
+        Ok(doc)
+    } else if o.scene.as_os_str().is_empty() {
+        Ok(SceneDocument::from_json(
+            ascii_material_room::DEFAULT_SCENE_JSON,
+        )?)
+    } else {
+        Ok(SceneDocument::load(&o.scene)?)
+    }
+}
+fn camera(o: &Options, doc: &SceneDocument, mode: Mode) -> Camera {
+    o.project_data
+        .as_ref()
+        .map_or_else(|| doc.camera(mode), |p| p.cameras().get(mode))
+}
 fn distribution(values: &[f64]) -> Value {
     if values.is_empty() {
         return Value::Null;
@@ -200,6 +237,12 @@ fn distribution(values: &[f64]) -> Value {
 }
 
 fn playback(o: &Options, doc: &SceneDocument) -> Result<Option<Playback>> {
+    if let Some(project) = &o.project_data {
+        return Ok(Some(Playback::new(
+            doc.clone(),
+            project.sequence().clone(),
+        )?));
+    }
     o.updates
         .as_ref()
         .map(|path| Ok(Playback::new(doc.clone(), UpdateSequence::load(path)?)?))
@@ -247,11 +290,14 @@ fn coverage(scene: &impl Scene, cam: Camera, t: f32, cols: u32, rows: u32, aspec
 fn headless(o: &Options, doc: &SceneDocument) -> Result<()> {
     // Reject the complete update plan before creating GPU resources.
     // Freeze the file once for every view and for the recorded provenance.
-    let sequence = o
-        .updates
-        .as_ref()
-        .map(|path| UpdateSequence::load(path))
-        .transpose()?;
+    let sequence = if let Some(project) = &o.project_data {
+        Some(project.sequence().clone())
+    } else {
+        o.updates
+            .as_ref()
+            .map(|path| UpdateSequence::load(path))
+            .transpose()?
+    };
     let make_playback = || -> Result<Option<Playback>> {
         sequence
             .as_ref()
@@ -287,7 +333,7 @@ fn headless(o: &Options, doc: &SceneDocument) -> Result<()> {
         }
         let folder = o.output.join(mode.name());
         std::fs::create_dir_all(&folder)?;
-        let cam = doc.camera(mode);
+        let cam = camera(o, doc, mode);
         let aspect = w as f32 / h as f32;
         let mut composer = Composer::with_threads(o.workers)?;
         composer.set_primary_sampling(o.sampling);
@@ -389,7 +435,7 @@ fn headless(o: &Options, doc: &SceneDocument) -> Result<()> {
         );
     }
     let manifest = json!({"client":"ascii-material-room","scene_path":o.scene,"scene_name":doc.name(),"scene_version":doc.version(),"objects":doc.object_count(),
-        "input_scene":doc.source(),
+        "input_scene":doc.source(),"project_path":o.project,"input_project":o.project_data.as_ref().map(Project::source),
         "input_updates":input_updates,"updates_path":o.updates,
         "grid":[cols,rows],"output":[w,h],"profile":o.profile.name(),"workers":o.workers,"stage":"light",
         "simulation_ticks_per_second":30,"time_start":o.time,"camera_orbit_speed":o.orbit_speed,
@@ -419,6 +465,10 @@ struct App {
     gpu: Option<Gpu>,
     composer: Composer,
     cam: Camera,
+    project_file: Option<ProjectFile>,
+    cameras: CameraBank,
+    camera_dirty: bool,
+    selected: Option<u32>,
     keys: HashSet<KeyCode>,
     last: Instant,
     start: Instant,
@@ -440,7 +490,20 @@ struct App {
     configuration_changes: u32,
 }
 impl App {
-    fn new(o: Options, doc: SceneDocument) -> Result<Self> {
+    fn new(mut o: Options, mut doc: SceneDocument) -> Result<Self> {
+        let project_file = o
+            .project
+            .as_ref()
+            .map(|p| ProjectFile::open(p))
+            .transpose()?;
+        if let Some(file) = &project_file {
+            doc = file.project().document().clone();
+            o.project_data = Some(file.project().clone());
+        }
+        let cameras = o
+            .project_data
+            .as_ref()
+            .map_or_else(|| CameraBank::defaults(&doc), |p| p.cameras().clone());
         let mut playback = playback(&o, &doc)?;
         if let Some(playback) = &mut playback {
             playback.advance_to((o.time * TICKS_PER_SECOND as f32).floor() as u32)?;
@@ -449,7 +512,15 @@ impl App {
         let mut composer = Composer::with_threads(o.workers)?;
         composer.set_primary_sampling(o.sampling);
         Ok(Self {
-            cam: doc.camera(o.mode),
+            cam: camera(&o, &doc, o.mode),
+            selected: doc.source()["objects"]
+                .as_array()
+                .and_then(|v| v.first())
+                .and_then(|v| v["id"].as_u64())
+                .map(|v| v as u32),
+            project_file,
+            cameras,
+            camera_dirty: false,
             composer,
             time: o.time,
             o,
@@ -478,8 +549,26 @@ impl App {
         })
     }
     fn reload(&mut self) {
+        if self.project_file.is_some() {
+            let result = (|| -> Result<()> {
+                if self.camera_dirty {
+                    return Err("unsaved cameras: save before reload".into());
+                }
+                let file = self.project_file.as_mut().unwrap();
+                file.reload()?;
+                let project = file.project().clone();
+                self.install_project(project)?;
+                Ok(())
+            })();
+            self.authoring_message(result, "Project reloaded; preview at tick 0");
+            return;
+        }
         let replacement = (|| -> Result<_> {
-            let next = SceneDocument::load(&self.o.scene)?;
+            let next = if self.o.scene.as_os_str().is_empty() {
+                SceneDocument::from_json(ascii_material_room::DEFAULT_SCENE_JSON)?
+            } else {
+                SceneDocument::load(&self.o.scene)?
+            };
             let mut next_playback = playback(&self.o, &next)?;
             let time = if next_playback.is_some() {
                 self.o.time
@@ -500,6 +589,7 @@ impl App {
                 self.playback = next_playback;
                 self.time = time;
                 self.cam = cam;
+                self.cameras = CameraBank::defaults(&self.doc);
                 self.composer.reset();
                 self.configuration_changes += 1;
                 self.reload_message = "Scene reloaded".into();
@@ -510,6 +600,134 @@ impl App {
             }
         }
     }
+    fn authoring_message(&mut self, result: Result<()>, success: &str) {
+        self.reload_message = match result {
+            Ok(()) => success.into(),
+            Err(error) => {
+                eprintln!("Authoring rejected: {error}");
+                format!("Rejected: {error}")
+            }
+        };
+    }
+    fn dirty(&self) -> bool {
+        self.camera_dirty || self.project_file.as_ref().is_some_and(ProjectFile::dirty)
+    }
+    fn request_close(&mut self, discard: bool) -> bool {
+        if self.dirty() && !discard {
+            self.reload_message =
+                "Unsaved project: Ctrl+S saves; Shift+Esc discards and closes".into();
+            false
+        } else {
+            true
+        }
+    }
+    fn install_project(&mut self, project: Project) -> Result<()> {
+        let next = Playback::new(project.document().clone(), project.sequence().clone())?;
+        self.doc = project.document().clone();
+        self.cameras = project.cameras().clone();
+        self.cam = self.cameras.get(self.cam.mode);
+        self.o.project_data = Some(project);
+        self.playback = Some(next);
+        self.time = 0.;
+        self.paused = true;
+        self.camera_dirty = false;
+        self.composer.reset();
+        self.configuration_changes += 1;
+        if !self.doc.source()["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["id"].as_u64().map(|v| v as u32) == self.selected)
+        {
+            self.selected = self.doc.source()["objects"]
+                .as_array()
+                .unwrap()
+                .first()
+                .and_then(|v| v["id"].as_u64())
+                .map(|v| v as u32);
+        }
+        Ok(())
+    }
+    fn save_project(&mut self) {
+        let result = (|| -> Result<()> {
+            self.cameras.set(self.cam)?;
+            let file = self
+                .project_file
+                .as_mut()
+                .ok_or("use --project to save authoring")?;
+            file.replace(file.project().with_cameras(self.cameras.clone())?);
+            file.save()?;
+            self.o.project_data = Some(file.project().clone());
+            self.camera_dirty = false;
+            Ok(())
+        })();
+        self.authoring_message(result, "Project saved");
+    }
+    fn select_next(&mut self) {
+        let objects = self.doc.source()["objects"].as_array().unwrap();
+        let index = objects
+            .iter()
+            .position(|v| v["id"].as_u64().map(|v| v as u32) == self.selected);
+        self.selected = if objects.is_empty() {
+            None
+        } else {
+            objects[(index.map_or(0, |i| i + 1)) % objects.len()]["id"]
+                .as_u64()
+                .map(|v| v as u32)
+        };
+    }
+    fn edit_object(&mut self, key: KeyCode) {
+        let result = (|| -> Result<()> {
+            let id = self
+                .selected
+                .ok_or("no selected object; use author apply to insert")?;
+            self.cameras.set(self.cam)?;
+            let file = self
+                .project_file
+                .as_ref()
+                .ok_or("use --project for editing")?;
+            let project = file.project().with_cameras(self.cameras.clone())?;
+            let (next, selected) = match key {
+                KeyCode::Delete => (project.remove(id)?, None),
+                KeyCode::KeyD => {
+                    let (p, id) = project.duplicate(id)?;
+                    (p, Some(id))
+                }
+                _ => {
+                    let delta = match key {
+                        KeyCode::ArrowLeft => Vec3::new(-0.1, 0., 0.),
+                        KeyCode::ArrowRight => Vec3::new(0.1, 0., 0.),
+                        KeyCode::ArrowUp => Vec3::new(0., 0., -0.1),
+                        KeyCode::ArrowDown => Vec3::new(0., 0., 0.1),
+                        KeyCode::PageUp => Vec3::new(0., 0.1, 0.),
+                        KeyCode::PageDown => Vec3::new(0., -0.1, 0.),
+                        _ => return Err("unsupported editor action".into()),
+                    };
+                    (project.translate(id, delta)?, Some(id))
+                }
+            };
+            self.install_project(next.clone())?;
+            self.project_file.as_mut().unwrap().replace(next);
+            if selected.is_some() {
+                self.selected = selected;
+            }
+            Ok(())
+        })();
+        self.authoring_message(result, "Edited base scene; paused at tick 0; Ctrl+S saves");
+    }
+    fn switch_camera(&mut self, mode: Mode) {
+        if self.project_file.is_some() {
+            if let Err(e) = self.cameras.set(self.cam) {
+                self.reload_message = e;
+                return;
+            }
+            self.cam = self.cameras.get(mode);
+        } else {
+            self.cam = self.doc.camera(mode);
+        }
+        self.composer.reset();
+        self.configuration_changes += 1;
+    }
     fn draw(&mut self) -> Result<()> {
         let now = Instant::now();
         let elapsed = now - self.last;
@@ -518,22 +736,43 @@ impl App {
         if !self.paused {
             self.time += dt;
         }
-        let axis = |a, b| self.keys.contains(&a) as u8 as f32 - self.keys.contains(&b) as u8 as f32;
-        if axis(KeyCode::KeyE, KeyCode::KeyQ) != 0.
+        let modifier = self.keys.contains(&KeyCode::ControlLeft)
+            || self.keys.contains(&KeyCode::ControlRight)
+            || self.keys.contains(&KeyCode::AltLeft)
+            || self.keys.contains(&KeyCode::AltRight);
+        let axis = |a, b| {
+            if modifier {
+                0.
+            } else {
+                self.keys.contains(&a) as u8 as f32 - self.keys.contains(&b) as u8 as f32
+            }
+        };
+        let moving = axis(KeyCode::KeyE, KeyCode::KeyQ) != 0.
             || axis(KeyCode::KeyW, KeyCode::KeyS) != 0.
             || axis(KeyCode::KeyD, KeyCode::KeyA) != 0.
-            || axis(KeyCode::KeyX, KeyCode::KeyZ) != 0.
-        {
+            || axis(KeyCode::KeyX, KeyCode::KeyZ) != 0.;
+        if moving {
             self.configuration_changes += 1;
+            self.camera_dirty |= self.project_file.is_some();
         }
+        let before = self.cam;
         self.cam.orbit += axis(KeyCode::KeyE, KeyCode::KeyQ) * dt * 0.65;
         let (eye, target) = self.cam.pose();
-        let forward = Vec3::new(target.x - eye.x, 0., target.z - eye.z).normalize_or_zero();
+        let forward = if self.project_file.is_some() {
+            let direction = self.cam.ray(0, 0, 1, 1, 1.).dir;
+            Vec3::new(direction.x, 0., direction.z).normalize_or_zero()
+        } else {
+            Vec3::new(target.x - eye.x, 0., target.z - eye.z).normalize_or_zero()
+        };
         self.cam.offset += (forward * axis(KeyCode::KeyW, KeyCode::KeyS)
             + forward.cross(Vec3::Y) * axis(KeyCode::KeyD, KeyCode::KeyA)
             + Vec3::Y * axis(KeyCode::KeyX, KeyCode::KeyZ))
             * dt
             * 2.;
+        if moving && self.project_file.is_some() && self.cameras.set(self.cam).is_err() {
+            self.cam = before;
+            self.reload_message = "Camera control limit reached".into();
+        }
         let (_, _, cols, rows) = self.o.profile.dimensions();
         let update_start = Instant::now();
         let commits = if let Some(playback) = &mut self.playback {
@@ -561,10 +800,19 @@ impl App {
                 cols,
                 rows,
                 &format!(
-                    "MATERIAL ROOM | {} | {} | rev {} | C sampling P path 1/2/3 view | {}",
+                    "MATERIAL ROOM | {} | {} | rev {} | {} | {}",
                     self.cam.mode.name(),
                     self.o.sampling_name(),
                     snapshot.revision().revision,
+                    if self.project_file.is_some() {
+                        format!(
+                            "ID {} {} Tab select arrows move CtrlS save",
+                            self.selected.unwrap_or(0),
+                            if self.dirty() { "*" } else { "" }
+                        )
+                    } else {
+                        "C sampling P path 1/2/3 view".into()
+                    },
                     self.reload_message
                 ),
             );
@@ -593,6 +841,7 @@ impl App {
         let (w, h, cols, rows) = self.o.profile.dimensions();
         let report = json!({
             "scene_path":self.o.scene,"input_scene":self.doc.source(),"camera":self.cam.mode.name(),
+            "project_path":self.o.project,"unsaved_changes":self.dirty(),"camera_controls":self.cameras.to_json(),
             "updates_path":self.o.updates,"input_updates":self.playback.as_ref().map(Playback::source),
             "final_dynamic_state":update_state(&self.playback),
             "primary_sampling":self.o.sampling_name(),"camera_path":if self.o.coverage_path {"coverage"} else {"static"},
@@ -651,7 +900,11 @@ impl ApplicationHandler for App {
     }
     fn window_event(&mut self, e: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => e.exit(),
+            WindowEvent::CloseRequested => {
+                if self.request_close(false) {
+                    e.exit();
+                }
+            }
             WindowEvent::Resized(size) => {
                 if self.frames > 0 && self.size != (size.width, size.height) {
                     self.configuration_changes += 1;
@@ -675,9 +928,61 @@ impl ApplicationHandler for App {
                 if let PhysicalKey::Code(key) = event.physical_key {
                     if event.state == ElementState::Pressed {
                         self.keys.insert(key);
+                        let ctrl = self.keys.contains(&KeyCode::ControlLeft)
+                            || self.keys.contains(&KeyCode::ControlRight);
+                        if ctrl
+                            && matches!(key, KeyCode::KeyS | KeyCode::KeyD)
+                            && self.project_file.is_some()
+                        {
+                            self.keys.remove(&key);
+                            if !event.repeat {
+                                if key == KeyCode::KeyS {
+                                    self.save_project();
+                                } else {
+                                    self.edit_object(key);
+                                }
+                            }
+                            return;
+                        }
                         if !event.repeat {
                             match key {
-                                KeyCode::Escape => e.exit(),
+                                KeyCode::Tab if self.project_file.is_some() => self.select_next(),
+                                KeyCode::ArrowLeft
+                                | KeyCode::ArrowRight
+                                | KeyCode::ArrowUp
+                                | KeyCode::ArrowDown
+                                | KeyCode::PageUp
+                                | KeyCode::PageDown
+                                | KeyCode::Delete
+                                    if self.project_file.is_some() =>
+                                {
+                                    self.edit_object(key)
+                                }
+                                KeyCode::F5 if self.project_file.is_some() => {
+                                    let result = (|| -> Result<()> {
+                                        self.cameras.set(self.cam)?;
+                                        let project = self
+                                            .project_file
+                                            .as_ref()
+                                            .unwrap()
+                                            .project()
+                                            .with_cameras(self.cameras.clone())?;
+                                        let was_camera_dirty = self.camera_dirty;
+                                        self.install_project(project)?;
+                                        self.camera_dirty = was_camera_dirty;
+                                        self.paused = false;
+                                        Ok(())
+                                    })();
+                                    self.authoring_message(result, "Preview restarted");
+                                }
+                                KeyCode::Escape => {
+                                    if self.request_close(
+                                        self.keys.contains(&KeyCode::ShiftLeft)
+                                            || self.keys.contains(&KeyCode::ShiftRight),
+                                    ) {
+                                        e.exit();
+                                    }
+                                }
                                 KeyCode::Space => {
                                     self.paused = !self.paused;
                                     self.configuration_changes += 1;
@@ -695,19 +1000,17 @@ impl ApplicationHandler for App {
                                     self.composer.set_primary_sampling(self.o.sampling);
                                     self.configuration_changes += 1;
                                 }
-                                KeyCode::KeyP => {
+                                KeyCode::KeyP if self.project_file.is_none() => {
                                     self.o.coverage_path = !self.o.coverage_path;
                                     self.composer.reset();
                                     self.configuration_changes += 1;
                                 }
                                 KeyCode::Digit1 | KeyCode::Digit2 | KeyCode::Digit3 => {
-                                    self.cam = self.doc.camera(match key {
+                                    self.switch_camera(match key {
                                         KeyCode::Digit1 => Mode::First,
                                         KeyCode::Digit2 => Mode::Third,
                                         _ => Mode::Overhead,
                                     });
-                                    self.composer.reset();
-                                    self.configuration_changes += 1;
                                 }
                                 _ => {}
                             }
@@ -734,8 +1037,12 @@ impl ApplicationHandler for App {
         }
         if self.o.seconds > 0. && self.start.elapsed().as_secs_f32() >= self.o.seconds {
             println!("Material room window smoke: {} frames", self.frames);
-            e.exit();
-            return;
+            self.o.seconds = 0.;
+            e.set_control_flow(ControlFlow::Wait);
+            if self.request_close(false) {
+                e.exit();
+                return;
+            }
         }
         if !self.hidden && !self.zero_size {
             if let Some(window) = &self.window {
@@ -745,8 +1052,8 @@ impl ApplicationHandler for App {
     }
 }
 fn main() -> Result<()> {
-    let options = Options::read()?;
-    let doc = SceneDocument::load(&options.scene)?;
+    let mut options = Options::read()?;
+    let doc = load_document(&mut options)?;
     if options.validate {
         let updates = playback(&options, &doc)?;
         println!(
@@ -781,6 +1088,93 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
     use ascii_material_room::DEFAULT_SCENE_JSON;
+    #[test]
+    fn project_editor_persists_three_views_and_rejects_conflicting_reload_save() {
+        let directory =
+            std::env::temp_dir().join(format!("ascii-r15-window-test-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("project.json");
+        ProjectFile::create(&path, Project::starter().unwrap()).unwrap();
+        let mut options = Options::parse(
+            ["--project".into(), path.to_string_lossy().into_owned()].into_iter(),
+            1,
+        )
+        .unwrap();
+        let doc = load_document(&mut options).unwrap();
+        let mut app = App::new(options, doc).unwrap();
+        let mut poses = Vec::new();
+        for (i, mode) in [Mode::First, Mode::Third, Mode::Overhead]
+            .into_iter()
+            .enumerate()
+        {
+            app.switch_camera(mode);
+            app.cam.orbit = 0.12 * (i + 1) as f32;
+            app.cam.offset = Vec3::new(0.2, 0.1, -0.05);
+            app.camera_dirty = true;
+            poses.push(app.cam);
+        }
+        app.selected = Some(7);
+        app.edit_object(KeyCode::ArrowRight);
+        assert!(app.dirty());
+        assert!(app.paused);
+        assert_eq!(app.time, 0.);
+        let edited = app.doc.source().clone();
+        app.reload();
+        assert_eq!(app.doc.source(), &edited);
+        assert!(app.reload_message.contains("Rejected"));
+        assert!(!app.request_close(false));
+        assert!(app.request_close(true));
+        app.save_project();
+        assert!(!app.dirty(), "{}", app.reload_message);
+        assert!(app.request_close(false));
+        let reopened = Project::load(&path).unwrap();
+        assert_eq!(reopened.document().source(), &edited);
+        for cam in poses {
+            let mut before = Composer::with_threads(1).unwrap();
+            let mut after = Composer::with_threads(2).unwrap();
+            let old = snapshot(&app.doc, &app.playback, 0.75);
+            let new = reopened.document().snapshot(0.75);
+            let (a, _) = before.compose(&old, cam, 0.75, Stage::Light, 80, 45, 16. / 9.);
+            let (b, _) = after.compose(
+                &new,
+                reopened.cameras().get(cam.mode),
+                0.75,
+                Stage::Light,
+                80,
+                45,
+                16. / 9.,
+            );
+            assert_eq!(a, b, "saved view {}", cam.mode.name());
+        }
+        // Saving after an ordinary external write must never replace it.
+        let external = Project::starter().unwrap().to_json().unwrap();
+        std::fs::write(&path, &external).unwrap();
+        app.edit_object(KeyCode::ArrowLeft);
+        app.save_project();
+        assert!(app.dirty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), external);
+        app.reload();
+        assert!(app.reload_message.contains("Rejected"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn portable_default_is_embedded_and_project_flags_do_not_mix_inputs() {
+        let mut options = Options::parse(std::iter::empty(), 1).unwrap();
+        assert!(options.scene.as_os_str().is_empty());
+        assert_eq!(
+            load_document(&mut options).unwrap().source(),
+            SceneDocument::from_json(DEFAULT_SCENE_JSON)
+                .unwrap()
+                .source()
+        );
+        for args in [
+            vec!["--project", "p.json", "--scene", "s.json"],
+            vec!["--project", "p.json", "--updates", "u.json"],
+            vec!["--project", "p.json", "--camera-path", "coverage"],
+        ] {
+            assert!(Options::parse(args.into_iter().map(str::to_string), 1).is_err());
+        }
+    }
     #[test]
     fn dynamic_reload_preserves_everything_on_invalid_future_event_and_restarts_on_success() {
         let prefix =

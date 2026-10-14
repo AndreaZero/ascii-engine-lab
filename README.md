@@ -31,6 +31,12 @@ R13 verifies an [exact distance-limited box helper](QUERY_ACCELERATION.md) and m
 
 R14 adds [dynamic occupancy and snapshot identities](DYNAMIC_OCCUPANCY.md): the independent client applies atomic insert/remove/transform transactions, preserves old snapshots and survivor handles, and gives a recreated ID a new lifetime. A small optional history epoch invalidates glyph reuse on effective commits, including shadow/reflection receivers. Run `Avvia-occupazione.cmd` or use the [client API and event-file guide](clients/material-room/README.md#occupazione-dinamica-r14). This is bounded scene updating, with explicit publication cost and global history resets; physics, spatial acceleration and production performance remain separate work.
 
+R15 adds [practical authoring and a portable Windows package](AUTHORING_PORTABILITY.md).
+Run `Avvia-authoring.cmd` or follow the [authoring guide](clients/material-room/AUTHORING.md)
+to create, edit, preview and save a self-contained project with three camera slots.
+Both clients are included in the [package/probe workflow](docs/PORTABLE_PACKAGE.md).
+No renderer semantics change; a second physical machine remains unverified.
+
 [Quick start](#getting-started) · [How it renders](#rendering-approach) · [Captures and benchmarks](#captures-and-measurements) · [Contributing](#contributing) · [Report an issue](https://github.com/AndreaZero/ascii-engine-lab/issues)
 
 ## Rendering approach
