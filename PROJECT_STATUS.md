@@ -36,7 +36,7 @@ R8 CPU-only composition at 240×135 glyphs and 8 workers had median p50 values o
 
 R9 CPU-only median p50 values span 4.40–6.35 ms across the two finishes and three views with 8 workers. The 16.7 ms exploratory p95 budget was exceeded in 2/18 CPU runs, 19/72 matrix cases and 5/6 full recordings. Host activity was not isolated. Verification PASS means the recorded checks succeeded, not that every performance target or the visual ambition has been reached.
 
-R10 common-scene CPU-only medians with 8 workers are 6.34 / 7.36 / 7.55 ms with environment enabled, versus 4.45 / 4.14 / 4.02 ms without it (first/third/overhead, 240�135). No 8-worker CPU run exceeded the exploratory p95 budget; one of 72 matrix cases did (off path, 18.50 ms). The three motion runs did not. These are different contents from R9, not a direct optimization comparison. New transport remains a one-ray diffuse-visibility and one-bounce specular approximation, with rough local reflections potentially too dark or sharp.
+R10 common-scene CPU-only medians with 8 workers are 6.34 / 7.36 / 7.55 ms with environment enabled, versus 4.45 / 4.14 / 4.02 ms without it (first/third/overhead, 240×135). No 8-worker CPU run exceeded the exploratory p95 budget; one of 72 matrix cases did (off path, 18.50 ms). The three motion runs did not. These are different contents from R9, not a direct optimization comparison. New transport remains a one-ray diffuse-visibility and one-bounce specular approximation, with rough local reflections potentially too dark or sharp.
 
 ## Website/documentation coordination
 
@@ -46,4 +46,4 @@ The separate website repository is now identified as [ascii-engine-website](http
 
 Generated captures and movies remain local and are excluded from Git, as are private visual references. The website should not promise downloadable binaries or embed unavailable media. Request a specific delivery of selected original captures when needed; do not publish the user's reference screenshots as project assets.
 
-Primary links: [repository](https://github.com/AndreaZero/ascii-engine-lab), [getting started](README.md), [package metadata](Cargo.toml). The package is version 0.1.0; R1–R9 are development tranche labels, not semantic version releases.
+Primary links: [repository](https://github.com/AndreaZero/ascii-engine-lab), [getting started](README.md), [package metadata](Cargo.toml). The package is version 0.1.0; R1–R10 are development tranche labels, not semantic version releases.
