@@ -27,7 +27,7 @@ Comandi: **1/2/3** prima/terza/alto; **Q/E** orbita; **WASD** sposta osservatore
 Per una sequenza con camera e oggetti in movimento nelle tre viste:
 
 ```sh
-cargo run --locked --release -p ascii-material-room -- --scene clients/material-room/assets/material-room-v2.json --sequence 180 --camera all --orbit-speed 0.08 --profile detail --workers 8 --output evidence/my-material-room-motion
+cargo run --locked --release -p ascii-material-room -- --scene clients/material-room/assets/material-room-v2.json --sequence 180 --camera all --orbit-speed 0.025 --profile detail --workers 8 --output evidence/my-material-room-motion
 ```
 
 ## Dati comuni e compatibilità v1

@@ -23,6 +23,8 @@ R9 explores [worked and oxidized steel](METAL_STUDY.md) on the same analytic con
 
 R10 adds a [common-scene environment study](ENVIRONMENT_STUDY.md): stone, metal and animated cloth share a bounded environment-light and reflection contract. Run `Avvia-ambiente.cmd` on Windows, or `cargo run --locked --release --example environment_study -- --window --variant on`. The [engine path](ENGINE_PATH.md) sets the next gate: validated data-driven use from the independent client.
 
+R11 adds [validated alpha data](ALPHA_DATA.md) in Material Room: local surfaces, conductors, bounded environment and authored cameras in JSON v2, with v1 compatibility and atomic reload. On Windows run `Avvia-alpha.cmd`; the [client guide](clients/material-room/README.md) covers data editing and limits. This is a bounded integration milestone, not final artwork or a production engine.
+
 [Quick start](#getting-started) · [How it renders](#rendering-approach) · [Captures and benchmarks](#captures-and-measurements) · [Contributing](#contributing) · [Report an issue](https://github.com/AndreaZero/ascii-engine-lab/issues)
 
 ## Rendering approach

@@ -20,11 +20,12 @@ A reusable renderer under development in Rust + wgpu. Spatial queries produce ch
 | Wet readability, R8 | More legible grain in half shadows through glyph selection | [Wet readability](WET_READABILITY.md), source revision `395fd27`; same cell RGB, geometry and lighting; specular response unchanged |
 | Metal, R9 | Analytic convex shield, worked/oxidized steel and optional RGB conductor response | [Metal study](METAL_STUDY.md); verified three-view captures and backend parity, stylized material, no environment reflections or anisotropy |
 | Common scene/environment, R10 | Optional irradiance/radiance contract and one local reflection bounce; stone, metal and animated cape together | [Environment study](ENVIRONMENT_STUDY.md); bounded proxies, three-view captures, legacy parity; not full GI or final artwork |
+| Alpha data gate, R11 | Independent client consumes validated v2 surfaces, conductors, constant environment and authored cameras; v1 compatibility and atomic reload | [Alpha data](ALPHA_DATA.md); 204 test executions, 60 legacy PNGs unchanged, backend parity and clean-source build/run guide; bounded experimental scope |
 | CPU configuration | Serial path and configurable private worker pool, explicit density profiles | [Performance](PERFORMANCE.md), [portability](PORTABILITY.md); one machine does not establish minimum system requirements |
 
 ## Work in progress
 
-R10 has completed its bounded runtime study. Reports and status are versioned with the implementation; cite their containing Git revision. The next proposed gate is an alpha consumable by another project: expose the local material/conductor/environment contracts through validated client-owned data in Material Room. This is not yet implemented. See [the engine development path](ENGINE_PATH.md) for exit criteria and the distinction between core development and sample artwork.
+R11 closes the bounded alpha data gate: scenes, supported materials and cameras can be changed through validated Material Room data without changing the renderer or importing the courtyard fixture. Both clients and a clean-source build/run guide were verified on the same PC. API stability, final art, general authoring and another physical machine remain open. The next gate is geometry coverage and motion/cost: thin objects, edges, distance transitions and disocclusions, including profiling the observed timing variability. See [the engine development path](ENGINE_PATH.md).
 
 Fire, richer water dynamics, destructible environments, gameplay integration, more content and tools remain separate future work. Their inclusion in the design does not imply implementation.
 
@@ -38,6 +39,8 @@ R9 CPU-only median p50 values span 4.40–6.35 ms across the two finishes and th
 
 R10 common-scene CPU-only medians with 8 workers are 6.34 / 7.36 / 7.55 ms with environment enabled, versus 4.45 / 4.14 / 4.02 ms without it (first/third/overhead, 240×135). No 8-worker CPU run exceeded the exploratory p95 budget; one of 72 matrix cases did (off path, 18.50 ms). The three motion runs did not. These are different contents from R9, not a direct optimization comparison. New transport remains a one-ray diffuse-visibility and one-bounce specular approximation, with rough local reflections potentially too dark or sharp.
 
+R11 Material Room v2 CPU snapshot/composition medians with 8 workers are 10.70 / 7.30 / 7.73 ms at 240×135, measured inside synchronized GPU runs. Four of nine runs exceed p95 16.7 ms (worst 36.47 ms); later motion runs are faster and do not cancel those exceedances. Content differs from R10 and host activity is not isolated. This is neither an optimization comparison nor a realtime performance guarantee. Submission/wait remains separate from GPU timestamp time.
+
 ## Website/documentation coordination
 
 The engine coordinator owns this status file, engine source and verification reports. The website project owns page structure, layout, navigation and presentation. Link technical claims to reports and label each capability as verified, experimental or planned. Preserve the distinction between intended visual quality and achieved quality.
@@ -46,4 +49,4 @@ The separate website repository is now identified as [ascii-engine-website](http
 
 Generated captures and movies remain local and are excluded from Git, as are private visual references. The website should not promise downloadable binaries or embed unavailable media. Request a specific delivery of selected original captures when needed; do not publish the user's reference screenshots as project assets.
 
-Primary links: [repository](https://github.com/AndreaZero/ascii-engine-lab), [getting started](README.md), [package metadata](Cargo.toml). The package is version 0.1.0; R1–R10 are development tranche labels, not semantic version releases.
+Primary links: [repository](https://github.com/AndreaZero/ascii-engine-lab), [getting started](README.md), [package metadata](Cargo.toml). The package is version 0.1.0; R1–R11 are development tranche labels, not semantic version releases.

@@ -18,15 +18,16 @@ The core owns visibility/composition, material/light contracts, temporal handlin
 and glyph presentation. A polished sample alone does not prove an engine is usable.
 Do not keep adding material showcases without addressing the gaps below.
 
-## Next gate: consume the new capabilities from data
+## Data gate: closed within the R11 scope
 
-After closing the common-scene study and its performance review, extend the
-independent Material Room client to consume local materials, conductor parameters
-and the bounded environment contract through a small, validated versioned format.
-It currently demonstrates the earlier R6 subset. Keep old files compatible or
-provide an explicit migration; reject invalid values with useful messages.
+[R11](ALPHA_DATA.md) extends independent Material Room to consume local surfaces,
+conductor parameters, the bounded environment contract and client-owned cameras
+through validated version 2 data. Version 1 remains compatible; migration is
+explicit and field errors identify invalid data. Both clients, legacy regressions
+and a clean-source build/run guide passed on the same physical machine. This is
+a bounded alpha integration result, not final art, an editor or production V1.
 
-Exit criteria:
+Acceptance criteria verified in that scope:
 
 - Scene/material/camera settings change through client data without a patch to
   the renderer or imports of the courtyard's actor/world modules.
@@ -43,6 +44,12 @@ scene misses its declared frame budget, retain that failure and choose a bounded
 profiling/quality experiment before promising production performance.
 
 ## Remaining gates
+
+Next: geometry coverage, motion and cost. Preserve the R11 workload and its
+timing failures (4/9 eight-worker runs above p95 16.7 ms), then choose a bounded
+coverage/profiling experiment before making realtime performance claims. Do not
+substitute another material showcase for this gate. No new writer is assigned
+automatically by this document.
 
 | Gate | Engineering work | Evidence needed to close it |
 | --- | --- | --- |

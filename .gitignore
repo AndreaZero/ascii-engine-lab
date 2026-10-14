@@ -15,6 +15,9 @@
 !/evidence/r*/baseline/examples/**/*.rs
 # Keep the compact reports linked from the development documentation.
 !/evidence/**/summary.md
+# Disposable clean-source verification checkouts contain their own historical
+# summaries; never let the summary exception publish a nested repository.
+/evidence/**/clean-checkout/
 # Apply after directory exceptions so nested build output stays excluded.
 **/target/
 
