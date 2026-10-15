@@ -1,6 +1,6 @@
 # Project status — source for the website and documentation
 
-Updated 14 October 2026. This repository is the source of truth for the ASCII engine laboratory. Website copy should link to the corresponding source revision and report; an experiment in progress is not a released capability.
+Updated 15 October 2026. This repository is the source of truth for the ASCII engine laboratory. Website copy should link to the corresponding source revision and report; an experiment in progress is not a released capability.
 
 ## What this project is
 
@@ -28,6 +28,16 @@ A reusable renderer under development in Rust + wgpu. Spatial queries produce ch
 | Practical authoring, R15 | Self-contained validated projects, CLI edits, native object/camera controls and protected save/reopen; relocatable Windows package/probe | [Authoring and portability](AUTHORING_PORTABILITY.md); 396 test executions, exact saved-camera rays, whole-timeline validation and real CLI checks. Renderer unchanged. One physical host only; combined portability gate remains partial |
 
 ## Work in progress
+
+R16 completed a bounded reusable visual experiment: validated JSON figures with
+oriented ellipsoids and garment panels, including a changed-cut variant. Core and
+existing clients are unchanged. [Result and measurements](VISUAL_CAPACITY.md).
+The visual exit criterion failed: improved head/neck/arm separation does not yet
+deliver reliable clothing detail, convincing folds or sufficient contrast across
+views. General visual capacity remains open. Center passed the exploratory CPU
+budget on this host; both new figures failed it in all Conservative9 runs.
+No completion percentage is supported. The user has no second physical host;
+that validation gap remains explicit without blocking visual development.
 
 R15 delivers practical creation/edit/preview/save/reopen for the supported subset
 and a Windows package/probe. Another physical machine is still unverified, so

@@ -37,6 +37,14 @@ to create, edit, preview and save a self-contained project with three camera slo
 Both clients are included in the [package/probe workflow](docs/PORTABLE_PACKAGE.md).
 No renderer semantics change; a second physical machine remains unverified.
 
+R16 tests [reusable visual capacity](VISUAL_CAPACITY.md): two original
+figures authored through the same bounded JSON producer, uniform-shape and
+structured-surface comparisons at fixed cell density. The experiment keeps
+artwork outside the shared renderer. The bounded data path works, but the visual
+exit criterion is not met: clothing details and dark-view contrast remain weak.
+Center passed the local exploratory CPU budget; Conservative9 failed it on both
+new figures. See the report for verification, measurements and limits.
+
 [Quick start](#getting-started) · [How it renders](#rendering-approach) · [Captures and benchmarks](#captures-and-measurements) · [Contributing](#contributing) · [Report an issue](https://github.com/AndreaZero/ascii-engine-lab/issues)
 
 ## Rendering approach

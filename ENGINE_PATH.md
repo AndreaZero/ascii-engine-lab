@@ -4,6 +4,17 @@ This is the product path, not a count of visual studies or a percentage complete
 Current verified capabilities and measurements belong in [PROJECT_STATUS](PROJECT_STATUS.md).
 The renderer remains experimental. BLACKWATER gameplay development is paused.
 
+Current result, 15 October 2026: [R16 visual capacity](VISUAL_CAPACITY.md) completed
+its bounded experiment, but did not meet the visual ambition. The JSON producer
+and changed-cut variant are reusable; richer geometry alone did not resolve
+glyph repetition, dark-view contrast or lost details. A controlled contrast/
+glyph/feature-scale ablation on the same figures is the next proposed question,
+not an automatic new tranche. Center stays default; Conservative9 exceeded the
+exploratory CPU budget in all new-figure runs. R15's tooling proves bounded reuse,
+not this visual ambition. The
+second-host probe remains unverified; the user has no second machine and this
+does not block R16. Earlier recommendations to run that probe first are historical.
+
 ## Why a visual study can be engine development
 
 A study must answer a reusable engineering question, with an explicit comparison,
